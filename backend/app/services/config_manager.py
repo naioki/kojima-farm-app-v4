@@ -1,0 +1,349 @@
+"""
+設定管理モジュール
+店舗名・品目名をJSONファイルで動的に管理
+"""
+import json
+import os
+from pathlib import Path
+from typing import Any, List, Dict, Optional
+
+# このファイルの場所を基準に config/ を解決（CWD 依存を排除）
+_HERE = Path(__file__).resolve().parent.parent.parent  # backend/
+CONFIG_DIR = _HERE / "config"
+STORES_FILE = CONFIG_DIR / "stores.json"
+ITEMS_FILE = CONFIG_DIR / "items.json"
+UNITS_FILE = CONFIG_DIR / "units.json"  # 入数マスター: 品目|規格|店舗 → 入数
+ITEM_SETTINGS_FILE = CONFIG_DIR / "item_settings.json"  # 品目設定: 品目 → {default_unit, unit_type}
+
+# デフォルト値
+DEFAULT_STORES = ["鎌ケ谷", "五香", "八柱", "青葉台", "咲が丘", "習志野台", "八千代台"]
+
+DEFAULT_ITEMS = {
+    "青梗菜": ["青梗菜", "チンゲン菜", "ちんげん菜", "チンゲンサイ", "ちんげんさい"],
+    "胡瓜": ["胡瓜", "きゅうり", "キュウリ", "胡瓜（袋）"],
+    "胡瓜平箱": ["胡瓜平箱", "胡瓜平箱"],
+    "胡瓜バラ": ["胡瓜バラ", "きゅうりバラ", "キュウリバラ", "胡瓜ばら"],
+    "長ネギ": ["長ネギ", "ネギ", "ねぎ", "長ねぎ", "長ねぎ（袋）"],
+    "長ねぎバラ": ["長ねぎバラ", "長ネギバラ", "ネギバラ", "ねぎバラ", "長ねぎばら"],
+    "春菊": ["春菊", "しゅんぎく", "シュンギク"]
+}
+
+
+def ensure_config_dir():
+    """設定ディレクトリが存在することを確認"""
+    CONFIG_DIR.mkdir(exist_ok=True)
+
+def load_stores() -> List[str]:
+    """店舗名リストを読み込む"""
+    ensure_config_dir()
+    if STORES_FILE.exists():
+        try:
+            with open(STORES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('stores', DEFAULT_STORES)
+        except Exception:
+            return DEFAULT_STORES
+    else:
+        # デフォルト値を保存
+        save_stores(DEFAULT_STORES)
+        return DEFAULT_STORES
+
+def save_stores(stores: List[str]):
+    """店舗名リストを保存"""
+    ensure_config_dir()
+    with open(STORES_FILE, 'w', encoding='utf-8') as f:
+        json.dump({'stores': stores}, f, ensure_ascii=False, indent=2)
+
+def add_store(store_name: str) -> bool:
+    """新しい店舗名を追加"""
+    stores = load_stores()
+    if store_name not in stores:
+        stores.append(store_name)
+        save_stores(stores)
+        return True
+    return False
+
+def remove_store(store_name: str) -> bool:
+    """店舗名を削除"""
+    stores = load_stores()
+    if store_name in stores:
+        stores.remove(store_name)
+        save_stores(stores)
+        return True
+    return False
+
+def load_items() -> Dict[str, List[str]]:
+    """品目名正規化マップを読み込む（DEFAULT_ITEMSの新規品目をマージ）"""
+    ensure_config_dir()
+    if ITEMS_FILE.exists():
+        try:
+            with open(ITEMS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # デフォルトに含まれる新規品目（例: 胡瓜平箱）を追加
+                for k, v in DEFAULT_ITEMS.items():
+                    if k not in data:
+                        data[k] = v
+                return data
+        except Exception:
+            return DEFAULT_ITEMS.copy()
+    else:
+        save_items(DEFAULT_ITEMS)
+        return DEFAULT_ITEMS.copy()
+
+def save_items(items: Dict[str, List[str]]):
+    """品目名正規化マップを保存"""
+    ensure_config_dir()
+    with open(ITEMS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+
+def add_item_variant(normalized_name: str, variant: str):
+    """品目のバリアント（表記ゆれ）を追加"""
+    items = load_items()
+    if normalized_name not in items:
+        items[normalized_name] = []
+    if variant not in items[normalized_name]:
+        items[normalized_name].append(variant)
+    save_items(items)
+
+def add_new_item(normalized_name: str, variants: Optional[List[str]] = None):
+    """新しい品目を追加"""
+    items = load_items()
+    if normalized_name not in items:
+        items[normalized_name] = variants or [normalized_name]
+        save_items(items)
+        return True
+    return False
+
+def remove_item(normalized_name: str) -> bool:
+    """品目を削除"""
+    items = load_items()
+    if normalized_name in items:
+        del items[normalized_name]
+        save_items(items)
+        return True
+    return False
+
+def auto_learn_store(store_name: str) -> str:
+    """新しい店舗名を自動学習（既存のものと似ていれば統合、そうでなければ追加）"""
+    stores = load_stores()
+    store_name = store_name.strip()
+    
+    # 既存の店舗名と類似チェック
+    for existing_store in stores:
+        if existing_store in store_name or store_name in existing_store:
+            return existing_store  # 既存の店舗名を返す
+    
+    # 新しい店舗名として追加
+    if store_name and store_name not in stores:
+        add_store(store_name)
+    return store_name
+
+def auto_learn_item(item_name: str) -> str:
+    """新しい品目名を自動学習（正規化して追加）"""
+    items = load_items()
+    item_name = item_name.strip()
+    
+    # 既存の品目名と照合
+    for normalized, variants in items.items():
+        if item_name in variants or any(variant in item_name for variant in variants):
+            return normalized
+    
+    # 新しい品目として追加（正規化名はそのまま使用）
+    if item_name:
+        add_new_item(item_name, [item_name])
+    return item_name
+
+
+# ==========================================
+# 入数マスター（柔軟に編集可能、GASの入数マスターと同様の役割）
+# - 編集した入数は次回解析時に反映され、合計数量の自動計算に使用されます
+# - GASの入数マスターと同期する場合は、スプレッドシートからCSV出力して units.json に手動反映
+# ==========================================
+
+def _units_key(item: str, spec: str, store: str) -> str:
+    """入数マスター用のキー生成"""
+    def n(v):
+        return (v or "").strip().replace(" ", "")
+    return f"{n(item)}|{n(spec)}|{n(store)}"
+
+
+def load_units() -> Dict[str, int]:
+    """入数マスターを読み込む（品目|規格|店舗 → 入数）"""
+    ensure_config_dir()
+    if UNITS_FILE.exists():
+        try:
+            with open(UNITS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {k: int(v) for k, v in data.items() if v}
+                return {}
+        except Exception:
+            return {}
+    return {}
+
+
+def save_units(units: Dict[str, int]):
+    """入数マスターを保存"""
+    ensure_config_dir()
+    with open(UNITS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(units, f, ensure_ascii=False, indent=2)
+
+
+def lookup_unit(item: str, spec: str, store: str) -> int:
+    """入数マスターから入数を検索（0なら未登録）"""
+    units = load_units()
+    key = _units_key(item, spec, store)
+    return units.get(key, 0)
+
+
+def add_unit_if_new(item: str, spec: str, store: str, unit: int) -> bool:
+    """入数マスターに登録（既存なら上書きしない、新規のみ追加）"""
+    if unit <= 0:
+        return False
+    units = load_units()
+    key = _units_key(item, spec, store)
+    if key in units:
+        return False  # 既存なら追加しない（柔軟に変えたい場合は上書きも可）
+    units[key] = unit
+    save_units(units)
+    return True
+
+
+def set_unit(item: str, spec: str, store: str, unit: int) -> None:
+    """入数マスターの入数を設定（既存は上書き＝柔軟に変えられる）"""
+    if unit <= 0:
+        return
+    units = load_units()
+    key = _units_key(item, spec, store)
+    units[key] = unit
+    save_units(units)
+
+
+def initialize_default_units():
+    """デフォルト入数を初期化（全店舗共通のデフォルト値）"""
+    units = load_units()
+    updated = False
+    
+    # デフォルト入数の定義（品目|規格 → 入数）
+    default_unit_map = {
+        ("胡瓜", ""): 30,  # 胡瓜（袋）: 30袋/コンテナ
+        ("胡瓜平箱", ""): 30,  # 胡瓜平箱: 30袋/コンテナ（×数字は箱数で受信）
+        ("胡瓜バラ", ""): 100,  # 胡瓜バラ: 100本/コンテナ
+        ("長ネギ", ""): 50,  # 長ねぎ: 50本/コンテナ
+        ("長ねぎバラ", ""): 50,  # 長ねぎバラ: 50本/コンテナ
+        ("春菊", ""): 30,  # 春菊: 30袋/コンテナ
+        ("青梗菜", ""): 20,  # 青梗菜: 20袋/コンテナ
+    }
+    
+    # 全店舗にデフォルト値を設定（既存の値がある場合は上書きしない）
+    stores = load_stores()
+    for (item, spec), unit in default_unit_map.items():
+        for store in stores:
+            key = _units_key(item, spec, store)
+            if key not in units:  # 既存の値がない場合のみ設定
+                units[key] = unit
+                updated = True
+    
+    if updated:
+        save_units(units)
+
+
+# ==========================================
+# 品目設定管理（1コンテナあたりの入数と単位）
+# ==========================================
+
+DEFAULT_ITEM_SETTINGS = {
+    "胡瓜": {"default_unit": 30, "unit_type": "袋", "receive_as_boxes": False},
+    "胡瓜平箱": {"default_unit": 30, "unit_type": "袋", "receive_as_boxes": True},
+    "胡瓜バラ": {"default_unit": 100, "unit_type": "本", "receive_as_boxes": False},
+    "長ネギ": {"default_unit": 50, "unit_type": "本", "receive_as_boxes": False},
+    "長ねぎバラ": {"default_unit": 50, "unit_type": "本", "receive_as_boxes": False},
+    "春菊": {"default_unit": 30, "unit_type": "袋", "receive_as_boxes": False},
+    "青梗菜": {"default_unit": 20, "unit_type": "袋", "receive_as_boxes": False},
+}
+
+def load_item_settings() -> Dict[str, Dict[str, Any]]:
+    """品目設定を読み込む（品目 → {default_unit, unit_type, receive_as_boxes}）
+
+    読み取り専用: ファイルへの書き込みは行わない。
+    初期ファイルが存在しない場合のみ save を呼ぶ。
+    """
+    ensure_config_dir()
+    if ITEM_SETTINGS_FILE.exists():
+        try:
+            with open(ITEM_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                # デフォルト値をベースにユーザー設定でオーバーライド
+                merged: Dict[str, Dict[str, Any]] = {}
+                for key, default_val in DEFAULT_ITEM_SETTINGS.items():
+                    user_val = data.get(key, {})
+                    merged[key] = {**default_val, **user_val}
+                # ファイルにしかない追加品目もそのまま保持
+                for key, val in data.items():
+                    if key not in merged:
+                        merged[key] = {
+                            "default_unit": val.get("default_unit", 0),
+                            "unit_type": val.get("unit_type", "袋"),
+                            "receive_as_boxes": val.get("receive_as_boxes", False),
+                        }
+                return merged
+        except Exception:
+            return DEFAULT_ITEM_SETTINGS.copy()
+    else:
+        # 初回のみファイルを生成
+        save_item_settings(DEFAULT_ITEM_SETTINGS)
+        return DEFAULT_ITEM_SETTINGS.copy()
+
+
+def save_item_settings(settings: Dict[str, Dict[str, Any]]):
+    """品目設定を保存"""
+    ensure_config_dir()
+    with open(ITEM_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+def get_item_setting(item: str) -> Dict[str, Any]:
+    """品目の設定を取得（デフォルト値あり）"""
+    settings = load_item_settings()
+    if item in settings:
+        s = settings[item].copy()
+        s.setdefault("receive_as_boxes", False)
+        return s
+    return {"default_unit": 0, "unit_type": "袋", "receive_as_boxes": False}
+
+
+def set_item_setting(item: str, default_unit: int, unit_type: str, receive_as_boxes: Optional[bool] = None):
+    """品目の設定を設定・更新"""
+    settings = load_item_settings()
+    existing = settings.get(item, {})
+    settings[item] = {
+        "default_unit": default_unit,
+        "unit_type": unit_type,
+        "receive_as_boxes": receive_as_boxes if receive_as_boxes is not None else existing.get("receive_as_boxes", False),
+    }
+    save_item_settings(settings)
+
+
+def set_item_receive_as_boxes(item: str, receive_as_boxes: bool):
+    """品目の「受信方法」のみ更新（総数/箱数）"""
+    settings = load_item_settings()
+    if item not in settings:
+        settings[item] = {"default_unit": 0, "unit_type": "袋", "receive_as_boxes": receive_as_boxes}
+    else:
+        settings[item]["receive_as_boxes"] = receive_as_boxes
+    save_item_settings(settings)
+
+
+def get_box_count_items() -> List[str]:
+    """「×数字」が箱数で送られてくる品目名のリストを返す"""
+    settings = load_item_settings()
+    return [name for name, s in settings.items() if s.get("receive_as_boxes", False)]
+
+
+def remove_item_setting(item: str):
+    """品目の設定を削除"""
+    settings = load_item_settings()
+    if item in settings:
+        del settings[item]
+        save_item_settings(settings)

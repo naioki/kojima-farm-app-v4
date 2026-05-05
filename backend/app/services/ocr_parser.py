@@ -1,0 +1,471 @@
+"""
+OCR Parser Service
+Gemini API による FAX 画像の解析 + バリデーション。
+v3 app.py から Streamlit 依存を除去してポーティング。
+"""
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Dict, List, Optional
+
+from functools import lru_cache
+
+from google import genai
+from google.genai import types as genai_types
+from PIL import Image
+
+from app.services.config_manager import (
+    get_box_count_items,
+    get_item_setting,
+    add_unit_if_new,
+    load_item_settings,
+    load_items,
+    load_stores,
+    auto_learn_item,
+    auto_learn_store,
+    lookup_unit,
+)
+
+
+# ─── helpers ─────────────────────────────────────────────────────────────────
+
+def safe_int(v: Any) -> int:
+    """安全に整数へ変換"""
+    if v is None:
+        return 0
+    if isinstance(v, int):
+        return v
+    s = re.sub(r"\D", "", str(v))
+    return int(s) if s else 0
+
+
+def get_unit_label_for_item(item: str, spec: str) -> str:
+    """
+    品目名と規格から単位ラベルを判定（品目設定を優先）。
+    v3 app.py の get_unit_label_for_item() と完全同一ロジック。
+    """
+    setting = get_item_setting(item)
+    if setting.get("unit_type"):
+        return setting["unit_type"]
+
+    # フォールバック: 文字列マッチング
+    if "長ねぎバラ" in item or "長ネギバラ" in item or "ネギバラ" in item or "ねぎバラ" in item or "長ねぎばら" in item:
+        return "本"
+    if ("ネギ" in item or "ねぎ" in item) and "バラ" not in item and "ばら" not in item:
+        return "袋"
+    if "胡瓜バラ" in item or "きゅうりバラ" in item or "キュウリバラ" in item or "胡瓜ばら" in item:
+        return "本"
+    if ("胡瓜" in item or "きゅうり" in item) and "バラ" not in item and "ばら" not in item:
+        return "袋"
+    spec_lower = spec.lower() if spec else ""
+    if "バラ" in spec or "ばら" in spec_lower:
+        if "胡瓜" in item or "きゅうり" in item:
+            return "本"
+        if "ネギ" in item or "ねぎ" in item:
+            return "本"
+    if "春菊" in item or "青梗菜" in item or "チンゲン菜" in item:
+        return "袋"
+    return "本"
+
+
+# ─── Gemini クライアント・モデル選択（起動後1回だけ解決してキャッシュ） ───────
+
+# 試行する優先モデルリスト
+_CANDIDATE_MODELS = [
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
+@lru_cache(maxsize=1)
+def _resolve_model(api_key: str) -> tuple[genai.Client, str]:
+    """Gemini クライアントと利用可能なモデル名を解決してキャッシュ。
+    API キーごとに1回だけ models.get() を呼び出す。"""
+    client = genai.Client(api_key=api_key)
+    for candidate in _CANDIDATE_MODELS:
+        try:
+            client.models.get(model=candidate)
+            return client, candidate
+        except Exception:
+            continue
+    raise RuntimeError("利用可能な Gemini モデルが見つかりません")
+
+
+# ─── Gemini parse ─────────────────────────────────────────────────────────────
+
+def parse_order_image(image: Image.Image, api_key: str) -> Optional[List[Dict]]:
+    """
+    Gemini API で注文書画像を解析。
+    v3 app.py の parse_order_image() と完全同一プロンプト・ロジック。
+    st.error → raise Exception に置換。
+
+    Returns:
+        解析結果リスト or None（失敗時）
+    """
+    client, model_name = _resolve_model(api_key)
+
+    known_stores = load_stores()
+    item_normalization = load_items()
+    item_settings_for_prompt = load_item_settings()
+    box_count_items = get_box_count_items()
+
+    store_list = "、".join(known_stores)
+    unit_lines = "\n".join(
+        [
+            f"- {name}: {s.get('default_unit', 0)}{s.get('unit_type', '袋')}/コンテナ"
+            for name, s in sorted(item_settings_for_prompt.items())
+            if s.get("default_unit", 0) > 0
+        ]
+    )
+    box_count_str = "、".join(box_count_items) if box_count_items else "（なし）"
+
+    # ── プロンプト（v3 完全互換） ──────────────────────────────────────────
+    prompt = f"""
+画像を解析し、以下の厳密なルールに従ってJSONで返してください。
+
+【店舗名リスト（参考）】
+{store_list}
+※上記リストにない店舗名も読み取ってください。
+
+【品目名の正規化ルール】
+{json.dumps(item_normalization, ensure_ascii=False, indent=2)}
+
+【重要ルール】
+1. 店舗名の後に「:」または改行がある場合、その後の行は全てその店舗の注文です
+2. 品目名がない行（例：「50×1」）は、直前の品目の続きとして処理してください
+3. 「/」で区切られた複数の注文は、同じ店舗・同じ品目として統合してください
+   - 例：「胡瓜バラ100×7 / 50×1」→ 胡瓜バラ100本×7箱 + 端数50本
+4. 「胡瓜バラ」と「胡瓜3本」は別の規格として扱ってください
+5. unit, boxes, remainderには「数字のみ」を入れてください
+
+【計算ルール（事前登録マスターデータ＝1コンテナあたりの入数）】
+メールで送られてくるのは基本的に「総数」です。以下の登録入数を参照して、総数から箱数・端数を逆算してください。
+{unit_lines}
+
+【最重要：総数 vs 箱数】
+- 「×数字」が総数の品目：boxes = 総数÷unit（切り捨て）, remainder = 総数 - unit×boxes で逆算してください。
+- 「×数字」が箱数の品目（以下のみ）：{box_count_str} → ×数字をそのままboxesにし、unitは上記の値、remainder=0 で出力してください。
+
+【出力JSON形式】
+[{{"store":"店舗名","item":"品目名","spec":"規格","unit":数字,"boxes":数字,"remainder":数字}}]
+
+必ず全ての店舗と品目を漏れなく読み取ってください。
+"""
+
+    # PIL Image → bytes で渡す
+    import io as _io
+    buf = _io.BytesIO()
+    fmt = image.format or "JPEG"
+    image.save(buf, format=fmt)
+    image_bytes = buf.getvalue()
+    mime_type = "image/jpeg" if fmt.upper() in ("JPEG", "JPG") else f"image/{fmt.lower()}"
+
+    response = client.models.generate_content(
+        model=model_name,
+        contents=[
+            genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+            prompt,
+        ],
+    )
+    text = response.text.strip()
+
+    # JSON 抽出
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        for part in text.split("```"):
+            if "{" in part and "[" in part:
+                text = part.strip()
+                break
+
+    result = json.loads(text)
+    if isinstance(result, dict):
+        result = [result]
+    return result
+
+
+# ─── Text parse (画像なし・テキスト本文から直接解析) ──────────────────────────
+
+def parse_order_text(text_body: str, api_key: str) -> Optional[List[Dict]]:
+    """
+    テキスト本文をそのまま Gemini に渡して注文データを解析。
+    転送メールなど、FAX 画像ではなくテキスト形式の注文書に対応。
+    """
+    client, model_name = _resolve_model(api_key)
+
+    known_stores = load_stores()
+    item_normalization = load_items()
+    item_settings_for_prompt = load_item_settings()
+    box_count_items = get_box_count_items()
+
+    store_list = "、".join(known_stores)
+    unit_lines = "\n".join(
+        [
+            f"- {name}: {s.get('default_unit', 0)}{s.get('unit_type', '袋')}/コンテナ"
+            for name, s in sorted(item_settings_for_prompt.items())
+            if s.get("default_unit", 0) > 0
+        ]
+    )
+    box_count_str = "、".join(box_count_items) if box_count_items else "（なし）"
+
+    prompt = f"""
+以下のメールテキストから注文データを抽出し、厳密なルールに従ってJSONで返してください。
+
+【店舗名リスト（参考）】
+{store_list}
+※上記リストにない店舗名も読み取ってください。
+
+【品目名の正規化ルール】
+{json.dumps(item_normalization, ensure_ascii=False, indent=2)}
+
+【重要ルール】
+1. 店舗名の後に「:」または改行がある場合、その後の行は全てその店舗の注文です
+2. 「×数字」は通常「数量×箱数」または「1コンテナあたりの入数×箱数」を示します
+3. 「/」で区切られた複数の注文は、同じ店舗・同じ品目として統合してください
+4. unit, boxes, remainderには「数字のみ」を入れてください
+
+【計算ルール】
+メールで送られてくる「×数字」は以下のいずれかです：
+- 総数の場合: boxes = 総数÷unit（切り捨て）, remainder = 総数 - unit×boxes
+- 箱数の場合（{box_count_str}）: ×数字をboxesに, remainder=0
+
+{unit_lines}
+
+【出力JSON形式】
+[{{"store":"店舗名","item":"品目名","spec":"規格","unit":数字,"boxes":数字,"remainder":数字}}]
+
+必ず全ての店舗と品目を漏れなく読み取ってください。
+
+【注文メールテキスト】
+{text_body}
+"""
+
+    response = client.models.generate_content(
+        model=model_name,
+        contents=[prompt],
+    )
+    text = response.text.strip()
+
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        for part in text.split("```"):
+            if "{" in part and "[" in part:
+                text = part.strip()
+                break
+
+    result = json.loads(text)
+    if isinstance(result, dict):
+        result = [result]
+    return result
+
+
+# ─── Validation ──────────────────────────────────────────────────────────────
+
+def validate_and_fix_order_data(
+    order_data: List[Dict],
+    auto_learn: bool = True,
+) -> tuple[List[Dict], List[str], List[str]]:
+    """
+    AI 解析結果を検証・修正。
+    v3 app.py の validate_and_fix_order_data() と完全同一ロジック。
+    st.success/warning → 戻り値のリストに変換。
+
+    Returns:
+        (validated_data, learned_stores, warnings)
+    """
+    if not order_data:
+        return [], [], []
+
+    validated_data: List[Dict] = []
+    warnings: List[str] = []
+    learned_stores: List[str] = []
+    learned_items: List[str] = []
+    known_stores = load_stores()
+
+    for i, entry in enumerate(order_data):
+        store = entry.get("store", "").strip()
+        item = entry.get("item", "").strip()
+
+        # ── 店舗名 ─────────────────────────────────────────────────────
+        validated_store: Optional[str] = None
+        # 完全一致
+        if store in known_stores:
+            validated_store = store
+        else:
+            # 部分一致
+            for ks in known_stores:
+                if ks in store or store in ks:
+                    validated_store = ks
+                    break
+        if not validated_store and store:
+            if auto_learn:
+                validated_store = auto_learn_store(store)
+                if validated_store not in learned_stores:
+                    learned_stores.append(validated_store)
+            else:
+                warnings.append(f"行{i+1}: 不明な店舗名「{store}」")
+
+        # ── 品目名 ─────────────────────────────────────────────────────
+        item_normalization = load_items()
+        normalized_item: Optional[str] = None
+        for normalized, variants in item_normalization.items():
+            if item in variants or any(v in item for v in variants):
+                normalized_item = normalized
+                break
+        if not normalized_item and item:
+            if auto_learn:
+                normalized_item = auto_learn_item(item)
+                if normalized_item not in learned_items:
+                    learned_items.append(normalized_item)
+            else:
+                warnings.append(f"行{i+1}: 品目名「{item}」を正規化できませんでした")
+
+        # ── 数量 ────────────────────────────────────────────────────────
+        unit = safe_int(entry.get("unit", 0))
+        boxes = safe_int(entry.get("boxes", 0))
+        remainder = safe_int(entry.get("remainder", 0))
+
+        if unit <= 0:
+            spec_for_lookup = (entry.get("spec") or "").strip()
+            looked_up = lookup_unit(
+                normalized_item or item, spec_for_lookup, validated_store or store
+            )
+            if looked_up > 0:
+                unit = looked_up
+            else:
+                setting = get_item_setting(normalized_item or item)
+                default_unit = setting.get("default_unit", 0)
+                if default_unit > 0:
+                    unit = default_unit
+
+        if unit == 0 and boxes == 0 and remainder == 0:
+            warnings.append(f"行{i+1}: 数量が全て0 (店舗: {store}, 品目: {item})")
+
+        spec_value = str((entry.get("spec") or "")).strip()
+
+        if unit > 0:
+            add_unit_if_new(
+                normalized_item or item, spec_value, validated_store or store, unit
+            )
+
+        validated_data.append(
+            {
+                "store": validated_store or store,
+                "item": normalized_item or item,
+                "spec": spec_value,
+                "unit": unit,
+                "boxes": boxes,
+                "remainder": remainder,
+            }
+        )
+
+    return validated_data, learned_stores, warnings
+
+
+# ─── Label builder ────────────────────────────────────────────────────────────
+
+def generate_labels_from_data(order_data: List[Dict], shipment_date: str) -> List[Dict]:
+    """
+    解析データからラベルリストを生成。
+    v3 app.py の generate_labels_from_data() と完全同一ロジック。
+
+    【重要】
+    - total_boxes = boxes + (1 if remainder > 0 else 0)
+    - 通常箱: quantity="{unit}{unit_label}", is_fraction=False
+    - 端数箱: quantity="{remainder}{unit_label}", is_fraction=True
+    """
+    from datetime import datetime as _dt
+
+    labels = []
+    dt = _dt.strptime(shipment_date, "%Y-%m-%d")
+    shipment_date_display = f"{dt.month}月{dt.day}日"
+
+    for entry in order_data:
+        store = entry.get("store", "")
+        item = entry.get("item", "")
+        spec = entry.get("spec", "")
+        unit = safe_int(entry.get("unit", 0))
+        boxes = safe_int(entry.get("boxes", 0))
+        remainder = safe_int(entry.get("remainder", 0))
+
+        if unit == 0:
+            continue
+
+        unit_label = get_unit_label_for_item(item, spec)
+        total_boxes = boxes + (1 if remainder > 0 else 0)
+
+        # 通常箱
+        for i in range(boxes):
+            labels.append(
+                {
+                    "store": store,
+                    "item": item,
+                    "spec": spec,
+                    "quantity": f"{unit}{unit_label}",
+                    "sequence": f"{i+1}/{total_boxes}",
+                    "is_fraction": False,
+                    "shipment_date": shipment_date_display,
+                    "unit": unit,
+                    "boxes": boxes,
+                    "remainder": remainder,
+                }
+            )
+
+        # 端数箱
+        if remainder > 0:
+            labels.append(
+                {
+                    "store": store,
+                    "item": item,
+                    "spec": spec,
+                    "quantity": f"{remainder}{unit_label}",
+                    "sequence": f"{total_boxes}/{total_boxes}",
+                    "is_fraction": True,
+                    "shipment_date": shipment_date_display,
+                    "unit": unit,
+                    "boxes": boxes,
+                    "remainder": remainder,
+                }
+            )
+
+    return labels
+
+
+def generate_summary_table(order_data: List[Dict]) -> List[Dict]:
+    """
+    出荷一覧表用データを生成。
+    v3 app.py の generate_summary_table() と完全同一ロジック。
+    """
+    summary = []
+    for entry in order_data:
+        store = entry.get("store", "")
+        item = entry.get("item", "")
+        spec = entry.get("spec", "")
+        boxes = safe_int(entry.get("boxes", 0))
+        remainder = safe_int(entry.get("remainder", 0))
+        unit = safe_int(entry.get("unit", 0))
+
+        rem_box = 1 if remainder > 0 else 0
+        total_packs = boxes + rem_box
+        total_quantity = (unit * boxes) + remainder
+        unit_label = get_unit_label_for_item(item, spec)
+        item_display = f"{item} {spec}".strip() if spec else item
+
+        summary.append(
+            {
+                "store": store,
+                "item": item,
+                "spec": spec,
+                "item_display": item_display,
+                "boxes": boxes,
+                "rem_box": rem_box,
+                "total_packs": total_packs,
+                "total_quantity": total_quantity,
+                "unit": unit,
+                "unit_label": unit_label,
+            }
+        )
+    return summary
