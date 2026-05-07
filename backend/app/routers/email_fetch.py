@@ -116,103 +116,115 @@ async def fetch_email_orders():
         registered_email_ids = set()
 
     for result in results:
-        email_date: datetime = result.get("date", datetime.now())
-        filename: str = result.get("filename", "order.jpg")
-        result_type: str = result.get("type", "image")
-        email_id: str = str(result.get("email_id", ""))
+        try:
+            email_date: datetime = result.get("date", datetime.now())
+            filename: str = result.get("filename", "order.jpg")
+            result_type: str = result.get("type", "image")
+            email_id: str = str(result.get("email_id", ""))
 
-        # 重複スキップ
-        if email_id and email_id in registered_email_ids:
-            print(f"[email_fetch] skip duplicate email_id={email_id}")
-            continue
-        if email_id:
-            registered_email_ids.add(email_id)
-
-        verif_id = str(uuid.uuid4())
-
-        if result_type == "text":
-            # ── テキストメール: Gemini に直接解析させる ─────────────────
-            text_body: str = result.get("text_body", "")
-            subject: str = result.get("subject", "")
-
-            image_url = f"text://{verif_id}"  # テキストメール用ダミー URL
-            parsed_lines_with_conf = None
-            raw_ocr_json = None
-            status = "pending"
-
-            if api_key and text_body:
-                try:
-                    raw = parse_order_text(text_body, api_key)
-                    validated, learned_stores, warnings = validate_and_fix_order_data(raw)
-                    parsed_lines_with_conf = [
-                        {**e, "confidence": 0.5 if any(e.get("store", "") in w or e.get("item", "") in w for w in warnings) else 1.0}
-                        for e in validated
-                    ]
-                    raw_ocr_json = raw
-                    status = "needs_review"
-                    print(f"[text parse] {subject}: {len(parsed_lines_with_conf)} lines")
-                except Exception as e:
-                    print(f"[text parse] failed for '{subject}': {e}")
-
-            sb.table("ocr_verifications").insert(
-                {
-                    "id": verif_id,
-                    "tenant_id": _DEFAULT_TENANT_ID,
-                    "image_url": image_url,
-                    "status": status,
-                    "raw_ocr_json": raw_ocr_json,
-                    "parsed_lines": parsed_lines_with_conf,
-                    "confidence_flags": {
-                        "source": "text_email",
-                        "subject": subject,
-                        "email_id": email_id,
-                    },
-                }
-            ).execute()
-            verification_ids.append(UUID(verif_id))
-
-        else:
-            # ── 画像メール: Storage へアップロードしてから処理 ───────────
-            image = result["image"]
-
-            # PIL → bytes
-            buf = io.BytesIO()
-            fmt = "JPEG" if image.format in (None, "JPEG") else image.format
-            image.save(buf, format=fmt)
-            image_bytes = buf.getvalue()
-            content_type = "image/jpeg" if fmt == "JPEG" else f"image/{fmt.lower()}"
-
-            # Storage へアップロード
-            date_prefix = email_date.strftime("%Y%m%d")
-            storage_path = f"fax-images/{date_prefix}/{uuid.uuid4().hex}_{filename}"
-            try:
-                sb.storage.from_("fax-images").upload(
-                    path=storage_path,
-                    file=image_bytes,
-                    file_options={"content-type": content_type},
-                )
-            except Exception as e:
-                print(f"Storage upload failed: {e}")
+            # 重複スキップ
+            if email_id and email_id in registered_email_ids:
+                print(f"[email_fetch] skip duplicate email_id={email_id}")
                 continue
+            if email_id:
+                registered_email_ids.add(email_id)
 
-            # 署名付き URL（1 年有効）
-            signed = sb.storage.from_("fax-images").create_signed_url(
-                path=storage_path, expires_in=365 * 24 * 3600
-            )
-            image_url = signed.get("signedURL") or signed.get("signedUrl", storage_path)
+            verif_id = str(uuid.uuid4())
 
-            sb.table("ocr_verifications").insert(
-                {
-                    "id": verif_id,
-                    "tenant_id": _DEFAULT_TENANT_ID,
-                    "image_url": image_url,
-                    "status": "pending",
-                    "raw_ocr_json": None,
-                    "parsed_lines": None,
-                    "confidence_flags": {"source": "image_email", "email_id": email_id},
-                }
-            ).execute()
-            verification_ids.append(UUID(verif_id))
+            if result_type == "text":
+                # ── テキストメール: Gemini に直接解析させる ─────────────────
+                text_body: str = result.get("text_body", "")
+                subject: str = result.get("subject", "")
+
+                image_url = f"text://{verif_id}"  # テキストメール用ダミー URL
+                parsed_lines_with_conf = None
+                raw_ocr_json = None
+                status = "pending"
+
+                if api_key and text_body:
+                    try:
+                        raw = parse_order_text(text_body, api_key)
+                        validated, learned_stores, warnings = validate_and_fix_order_data(raw)
+                        parsed_lines_with_conf = [
+                            {**e, "confidence": 0.5 if any(e.get("store", "") in w or e.get("item", "") in w for w in warnings) else 1.0}
+                            for e in validated
+                        ]
+                        raw_ocr_json = raw
+                        status = "needs_review"
+                        print(f"[text parse] {subject}: {len(parsed_lines_with_conf)} lines")
+                    except Exception as e:
+                        print(f"[text parse] failed for '{subject}': {e}")
+                        # Gemini失敗時は pending で保存（後で再解析可能）
+
+                try:
+                    sb.table("ocr_verifications").insert(
+                        {
+                            "id": verif_id,
+                            "tenant_id": _DEFAULT_TENANT_ID,
+                            "image_url": image_url,
+                            "status": status,
+                            "raw_ocr_json": raw_ocr_json,
+                            "parsed_lines": parsed_lines_with_conf or [],
+                            "confidence_flags": {
+                                "source": "text_email",
+                                "subject": subject,
+                                "email_id": email_id,
+                            },
+                        }
+                    ).execute()
+                    verification_ids.append(UUID(verif_id))
+                    print(f"[email_fetch] saved text email: {subject}")
+                except Exception as e:
+                    print(f"[email_fetch] DB insert failed for text email '{subject}': {e}")
+
+            else:
+                # ── 画像メール: Storage へアップロードしてから処理 ───────────
+                image = result["image"]
+
+                # PIL → bytes
+                buf = io.BytesIO()
+                fmt = "JPEG" if image.format in (None, "JPEG") else image.format
+                image.save(buf, format=fmt)
+                image_bytes = buf.getvalue()
+                content_type = "image/jpeg" if fmt == "JPEG" else f"image/{fmt.lower()}"
+
+                # Storage へアップロード
+                date_prefix = email_date.strftime("%Y%m%d")
+                storage_path = f"fax-images/{date_prefix}/{uuid.uuid4().hex}_{filename}"
+                try:
+                    sb.storage.from_("fax-images").upload(
+                        path=storage_path,
+                        file=image_bytes,
+                        file_options={"content-type": content_type},
+                    )
+                except Exception as e:
+                    print(f"Storage upload failed: {e}")
+                    continue
+
+                # 署名付き URL（1 年有効）
+                signed = sb.storage.from_("fax-images").create_signed_url(
+                    path=storage_path, expires_in=365 * 24 * 3600
+                )
+                image_url = signed.get("signedURL") or signed.get("signedUrl", storage_path)
+
+                try:
+                    sb.table("ocr_verifications").insert(
+                        {
+                            "id": verif_id,
+                            "tenant_id": _DEFAULT_TENANT_ID,
+                            "image_url": image_url,
+                            "status": "pending",
+                            "raw_ocr_json": None,
+                            "parsed_lines": [],
+                            "confidence_flags": {"source": "image_email", "email_id": email_id},
+                        }
+                    ).execute()
+                    verification_ids.append(UUID(verif_id))
+                except Exception as e:
+                    print(f"[email_fetch] DB insert failed for image email: {e}")
+
+        except Exception as e:
+            print(f"[email_fetch] unexpected error processing email: {e}")
 
     return EmailFetchResponse(
         fetched=len(verification_ids),
