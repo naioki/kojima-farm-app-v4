@@ -1,326 +1,428 @@
 # System Design v4 — 小島農園 管理システム
 
-**Version**: 4.0  
-**Date**: 2026-05-05  
+**Version**: 4.1  
+**Date**: 2026-05-07  
 **Author**: Claude (Senior Full-Stack Engineer)  
-**Status**: Awaiting Approval
+**Status**: In Progress
 
 ---
 
 ## 1. System Overview & Objectives
 
 ### Background
-v3 is a single-file Streamlit app that covers the full order processing pipeline: fetch FAX images from email → AI parse → validate → generate PDF labels → optionally sync to Google Sheets. It works correctly, but:
+v3 は単一ファイルの Streamlit アプリで、メール取得 → AI解析 → 確認編集 → PDF生成 → Google Sheets連携 までを一気通貫で処理する。動作は正しいが：
 
-- **Streamlit cold-start** takes 3–8 seconds per page interaction (full Python re-run)
-- **UI is rigid**: layout, fonts, colors, and interactivity are constrained by Streamlit components
-- **No persistent state**: every re-render re-reads config files and re-instantiates clients
-- **Single-user, single-process**: no concurrency, no background jobs
+- **Streamlit cold-start** が1インタラクションごとに 3〜8 秒かかる
+- **UI が硬直的**：レイアウト・フォント・インタラクションが Streamlit の制約を受ける
+- **永続状態なし**：再レンダリングのたびに設定ファイルを再読み込み
+- **単一ユーザー・単一プロセス**：並行処理不可
 
 ### v4 Goals
-| Goal | Measure of Success |
+| Goal | 達成基準 |
 |---|---|
-| Sub-second UI interactions | All client-side interactions < 200 ms |
-| Modern, branded UI | Custom dashboard layout with Japanese typography |
-| Decoupled architecture | Frontend and backend independently deployable |
-| Full feature parity | All v3 features working in v4 |
-| Maintainability | Clear separation of concerns; no 1200-line files |
+| サブ秒 UI | クライアント側操作 < 200 ms |
+| モダン UI | カスタムダッシュボード、日本語フォント |
+| デカップル設計 | フロントエンドとバックエンドを独立デプロイ可能 |
+| v3 完全機能対応 | v3 の全機能が v4 で動作すること |
+| 保守性 | 関心の分離；1200行ファイルなし |
 
 ---
 
-## 2. Proposed Tech Stack & Architecture
+## 2. Tech Stack & Architecture
 
 ### Stack
 
-| Layer | Technology | Justification |
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 16 (App Router, TypeScript, Turbopack) |
+| Backend API | FastAPI (Python 3.14) |
+| Auth | Supabase Auth (JWT, cookie) |
+| Database | Supabase Postgres |
+| PDF | ReportLab (v3 から移植) |
+| AI Parsing | Gemini 2.0-flash API |
+| Storage | Supabase Storage (fax-images bucket) |
+| Proxy/Auth Middleware | `proxy.ts` (Next.js 16 命名規則) |
+
+### Architecture
+
+```
+Browser (Next.js :3000)
+  /login
+  /dashboard/verifications   ← メイン画面
+  /dashboard/master          ← マスターデータ管理
+  /dashboard/settings        ← メール・API設定
+        │ HTTP (Supabase JWT cookie)
+FastAPI Backend (:8000)
+  GET  /api/email/fetch         ← IMAP取得 → Storage → ocr_verifications
+  POST /api/ocr/parse           ← verification_id → Gemini → parsed_lines
+  POST /api/ocr/verify          ← corrected_lines → approve RPC → order_id
+  GET  /api/orders/{id}/pdf     ← order_id → ReportLab → PDF stream
+  CRUD /api/config/*            ← stores/items/units/email_config
+        │ SQL (RLS)                      │ Supabase Storage
+Supabase Postgres               Supabase Storage (fax-images/)
+```
+
+---
+
+## 3. 実装済み機能（v4.1 時点）
+
+### ✅ 完了
+
+| 機能 | 場所 |
+|---|---|
+| Supabase Auth ログイン/リダイレクト | `proxy.ts`, `app/login/page.tsx` |
+| OCR 検証ダッシュボード（2カラム） | `app/dashboard/verifications/` |
+| 未処理/全件フィルタタブ | `verification-dashboard.tsx` |
+| 全ステータス表示（承認済・却下含む） | `verification-list.tsx` |
+| 承認済みは読み取り専用表示 | `verification-form.tsx` |
+| Gemini 解析ボタン | `verification-form.tsx` → `POST /api/ocr/parse` |
+| 承認 & PDF 自動ダウンロード | `verification-form.tsx` → `POST /api/ocr/verify` |
+| メール取得ボタン（ヘッダー） | `email-fetch-button.tsx` → `GET /api/email/fetch` |
+| IMAP 取得・Storage アップロード | `backend/app/routers/email_fetch.py` |
+| HTMLメール本文抽出 | `backend/app/services/email_reader.py` |
+| テキスト/HTMLメール → Gemini 即時解析 | `email_fetch.py` |
+| 重複メール検出（email_id チェック） | `email_fetch.py` |
+| マスターデータ CRUD | `app/dashboard/master/` |
+| 設定画面（メール設定） | `app/dashboard/settings/` |
+
+### ⚠️ 未実装・差分（v3 対比）
+
+| v3 機能 | v4 状況 | 優先度 |
 |---|---|---|
-| Frontend | **Next.js 15** (App Router, TypeScript) | React server components + client interactivity; excellent Japanese font support via next/font |
-| Backend API | **FastAPI** (Python 3.11+) | Keeps all existing Python logic intact; async support; auto-generates OpenAPI docs |
-| Auth | **Supabase Auth** | Already provisioned (hynedtzwxuinruxsxvlm); JWT sessions |
-| Database | **Supabase Postgres** | Already provisioned; stores orders, verifications, config master data |
-| PDF Generation | **ReportLab** (existing) | Migrated as-is into FastAPI endpoint; no rewrite needed |
-| AI Parsing | **Gemini API** (existing) | Migrated as-is; `gemini-2.5-flash` with existing prompt |
-| Storage | **Supabase Storage** | FAX images uploaded here; signed URLs passed to Gemini |
-| Background Jobs | **FastAPI BackgroundTasks** | Async email polling; no extra infra needed for v1 |
-| Deployment | **Vercel** (Next.js) + **Railway / Fly.io** (FastAPI) | Zero-config deployments; free tiers sufficient |
-
-### Architecture Diagram
-
-```
-┌─────────────────────────────────────────────────────┐
-│                   Browser (Next.js)                  │
-│  /login  /dashboard/verifications  /dashboard/orders │
-│  /dashboard/products  /dashboard/config              │
-└───────────────┬─────────────────────────────────────┘
-                │ HTTPS (JWT in cookie)
-┌───────────────▼─────────────────────────────────────┐
-│              FastAPI Backend (:8000)                 │
-│                                                      │
-│  POST /api/ocr/parse          ← image → Gemini       │
-│  POST /api/ocr/verify         ← corrected lines      │
-│  GET  /api/orders             ← list orders          │
-│  GET  /api/orders/{id}/pdf    ← generate PDF         │
-│  GET  /api/email/fetch        ← IMAP poll            │
-│  CRUD /api/config/*           ← stores, items, units │
-└───────┬───────────────────────────────────┬──────────┘
-        │ SQL (RLS)                          │ Supabase Storage
-┌───────▼──────────────┐          ┌─────────▼──────────┐
-│  Supabase Postgres   │          │  Supabase Storage  │
-│  (existing schema)   │          │  (fax-images bucket)│
-└──────────────────────┘          └────────────────────┘
-```
+| メール設定をUIから変更・保存 | 設定ページあるが保存API未結合 | **高** |
+| 送信者フィルタ（FROM）をUIから設定 | 環境変数のみ対応 | **高** |
+| メール本文のプレビュー（検証画面で確認） | 画像URLが `text://...` のとき表示なし | **高** |
+| メール一覧に件名・送信者を表示 | ID の先頭8文字のみ | **中** |
+| Gemini API クォータ枯渇時の再解析 | pending のまま放置 | **中** |
+| Google Sheets 連携 | 未実装 | **低** |
 
 ---
 
-## 3. UI/UX Improvement Plan
+## 4. メール読み取り機能 詳細設計（v3 対応）
 
-### Current Streamlit Constraints
-- Fixed sidebar layout; no custom nav
-- Tables use `st.dataframe` (read-only) or `st.data_editor` (functional but slow)
-- No optimistic UI; every button click triggers full page reload
-- No keyboard shortcuts; no drag-and-drop
-- Font rendering is inconsistent on Windows
+### 4.1 v3 の動作仕様（参照元）
 
-### v4 Dashboard Layout
+v3 の「メール自動読み取り」タブは以下の構成：
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ 🌿 小島農園  [検証待ち 3]   [注文]   [商品]   [設定]   田中 ▾  │  ← Top nav
-├──────┬───────────────────────────────────────────────────────┤
-│      │                                                        │
-│ Side │   Main Content Area                                    │
-│  bar │   (route-based, full height)                          │
-│      │                                                        │
-└──────┴───────────────────────────────────────────────────────┘
+[メール設定] ▼（アコーディオン）
+  IMAPサーバー:       imap.lolipop.jp
+  メールアドレス:      order@kojimanouen.com
+  パスワード:         ●●●●●●（表示切替）
+  送信者メール（フィルタ）: kojimamasayuki31@gmail.com
+  何日前まで遡るか:    3
+  [設定を保存（パスワードは保存されません）] ☐
+
+[メールをチェック]    [設定をリセット]
+
+使用中のメール: order@kojimanouen.com
+
+---（取得後）---
+受信リストをクリア
+
+▼ body_text - Fwd: 5/8ヨーク (2026-05-05 19:06:57+09:00)
+  [メール本文テキスト表示]
+  [解析結果テーブル（編集可）]
+  [出荷日入力] [承認・PDF]
 ```
 
-#### Key Screen: OCR Verification (`/dashboard/verifications`)
+**ポイント：**
+- メール取得 → その場で本文/画像を表示
+- 解析結果を即座に編集可能
+- 承認するとその場で PDF ダウンロード
+
+### 4.2 v4 の対応設計
+
+v4 はデータベース永続化があるため、v3 と完全同一の UI は不要。  
+ただし以下の点を v3 に合わせる：
+
+#### A. メール設定 UI (`/dashboard/settings`)
 
 ```
-┌─ FAX画像 ──────────────┐  ┌─ 解析結果 (編集可) ──────────────┐
-│                        │  │ 店舗    品目    箱数  端数  総数  │
-│  [FAX image preview]   │  │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                        │  │ 山田商店 胡瓜   3    5    95   ✏ │
-│                        │  │ 山田商店 長ネギ  2    0    100  ✏ │
-│                        │  │ + 行を追加                       │
-│                        │  ├─────────────────────────────────┤
-│                        │  │ [却下]              [✓ 承認・PDF] │
-└────────────────────────┘  └─────────────────────────────────┘
+[メール設定]
+  IMAPサーバー       [imap.lolipop.jp        ]
+  IMAPポート         [993                    ]
+  メールアドレス      [order@kojimanouen.com  ]
+  パスワード         [●●●●●●●●●●] [👁]
+  送信者フィルタ      [kojimamasayuki31@gmail ]  ← 空欄 = 全送信者
+  何日前まで遡るか    [3                      ] 日
+  
+  [保存]  ← PATCH /api/config/email
 ```
 
-- **Side-by-side layout**: FAX image left, editable grid right — impossible in Streamlit
-- **Inline editing**: click a cell to edit (React state, no round-trip until submit)
-- **Optimistic confirmation**: PDF download starts immediately on approve
-- **Confidence highlighting**: low-confidence cells highlighted in amber
+設定は `email_config` テーブルに保存。パスワードは **Supabase Vault** または  
+サービスロールで暗号化列に格納（平文保存禁止）。
 
-#### Key Screen: PDF Labels
-- Preview rendered in-browser via `/api/orders/{id}/pdf` (streamed PDF)
-- One-click download without page reload
+#### B. メール本文プレビュー（検証画面）
 
-### Typography
-- `Noto Sans JP` via `next/font/google` — crisp Japanese rendering at all sizes
-- Consistent `16px` base; no Streamlit widget font overrides needed
+テキスト/HTML メール（`image_url` が `text://...`）の場合：
+
+```
+左カラム（現在: 画像ビューアー）
+  ↓ image_url が text:// の場合
+  [メール情報カード]
+  件名: Fwd: 5/8ヨーク
+  送信者: kojimamasayuki31@gmail.com
+  受信日: 2026-05-05 19:06
+  ─────────────────────────
+  [本文テキスト（スクロール可）]
+```
+
+本文テキストは `confidence_flags.raw_text` または専用カラムに保存。
+
+#### C. メール取得フロー（改善版）
+
+```
+1. ユーザーが [メール取得] クリック
+2. GET /api/email/fetch
+3. IMAP 接続 → メール一覧取得
+4. 各メールを処理:
+   a. 画像添付あり  → Storage アップロード → ocr_verifications (status: pending)
+   b. HTML/テキスト → html_to_text() → Gemini 解析
+                    → ocr_verifications (status: needs_review or pending)
+5. レスポンス: { fetched: N, verification_ids: [...] }
+6. フロントエンド: トースト表示 + 検証リストを自動リフレッシュ
+```
+
+#### D. メール情報のメタデータ保存
+
+`confidence_flags` JSON に以下を追加：
+
+```json
+{
+  "source": "text_email",
+  "email_id": "12345",
+  "subject": "Fwd: 5/8ヨーク",
+  "from": "kojimamasayuki31@gmail.com",
+  "date": "2026-05-05T19:06:57+09:00",
+  "raw_text": "（本文テキスト）"
+}
+```
+
+これにより検証画面でメール情報を表示できる。
 
 ---
 
-## 4. Data Flow
+## 5. データフロー（完全版）
 
 ```
-1. EMAIL FETCH
-   Cron / manual trigger
+1. メール取得
+   [メール取得] ボタン or 定期実行
         │
         ▼
-   FastAPI: email_reader.py (IMAP)
-   → downloads image attachments
-   → uploads to Supabase Storage (fax-images/{date}/{uuid}.jpg)
-   → creates ocr_verifications row (status: pending, image_url: signed URL)
+   GET /api/email/fetch
+   └─ IMAP 接続（email_config テーブルまたは環境変数）
+   └─ 未取得メール（days_back 日分）を取得
+   └─ 重複チェック（confidence_flags.email_id）
+   
+   画像添付あり:
+     Storage アップロード → 署名付きURL → ocr_verifications (pending)
+   
+   HTML/テキスト:
+     html_to_text() → Gemini parse_order_text()
+     → ocr_verifications (needs_review / pending)
+     → confidence_flags に件名・送信者・本文を保存
 
-2. OCR PARSE
-   User opens /dashboard/verifications
-        │
-        ▼
-   Next.js fetches pending verifications from Supabase (direct RLS query)
-   User clicks "解析" on a pending row
+2. OCR 解析（画像メール）
+   検証画面で [Gemini 解析] ボタン
         │
         ▼
    POST /api/ocr/parse { verification_id }
-   FastAPI: downloads image → Gemini API (existing prompt + item master)
-   → returns parsed_lines JSON, confidence_flags
-   → stores in ocr_verifications.raw_ocr_json, parsed_lines, confidence_flags
+   → Storage から画像ダウンロード
+   → Gemini Vision API（既存プロンプト）
+   → parsed_lines, confidence_flags 更新
    → status: needs_review
 
-3. HUMAN VERIFICATION
-   User reviews/edits table in browser (React state only — no DB writes yet)
-   User clicks "承認・PDF"
+3. 人間確認・承認
+   検証画面でテーブル編集
+   [承認・PDF] クリック
         │
         ▼
    POST /api/ocr/verify { verification_id, corrected_lines, order_date }
-   FastAPI: calls approve_ocr_verification() RPC (existing Supabase function)
-   → creates orders + order_lines rows
+   → approve_ocr_verification() Supabase RPC
+   → orders + order_lines 作成
    → status: corrected
 
-4. PDF GENERATION
-   Same POST /api/ocr/verify response includes order_id
-        │
-        ▼
+4. PDF 生成
    GET /api/orders/{order_id}/pdf
-   FastAPI: queries order + lines → LabelPDFGenerator (existing ReportLab code)
-   → streams PDF as application/pdf
-   Browser: triggers download
-
-5. GOOGLE SHEETS SYNC (optional)
-   POST /api/orders/{order_id}/sync-sheets
-   FastAPI: delivery_converter + delivery_sheet_writer (existing code, unchanged)
+   → ReportLab で PDF 生成
+   → ブラウザが自動ダウンロード
 ```
 
 ---
 
-## 5. Core Logic Migration Strategy
+## 6. 画面構成
 
-All existing Python business logic is **migrated without rewriting**. Only the Streamlit UI layer is replaced.
+### `/dashboard/verifications` — OCR 検証
 
-| v3 File | v4 Location | Change |
+```
+┌─ ヘッダー ─────────────────────────────────────────────────────┐
+│ 🌿 小島農園  OCR検証 | マスターデータ | ⚙設定    [📧 メール取得] │
+└────────────────────────────────────────────────────────────────┘
+┌─ サイドバー ──┐ ┌─ 左ペイン ──────────────────┐ ┌─ 右ペイン ──────────┐
+│ [未処理][全件]│ │ 画像メール:                  │ │ 内容確認・修正フォーム │
+│              │ │   <FAX画像プレビュー>         │ │ 受注日: [____]        │
+│ ▲ ID:abc123 │ │                              │ │ 明細1:               │
+│   要確認 3行 │ │ テキスト/HTMLメール:          │ │  店舗 品目 箱 端 入  │
+│              │ │   件名: Fwd: 5/8ヨーク        │ │ [Gemini解析][承認PDF] │
+│   ID:def456 │ │   送信者: ...@gmail.com       │ │                      │
+│   未処理 0行 │ │   受信: 2026-05-05 19:06     │ │                      │
+│              │ │   ─────────────────          │ │                      │
+│   ID:ghi789 │ │   本文テキスト（スクロール）    │ │                      │
+│   承認済  5行│ │                              │ │                      │
+└──────────────┘ └─────────────────────────────┘ └────────────────────┘
+```
+
+### `/dashboard/settings` — メール設定
+
+```
+┌─ メール設定（IMAP） ───────────────────────────────────────┐
+│ IMAPサーバー    [imap.lolipop.jp          ]                │
+│ ポート          [993                      ]                │
+│ メールアドレス   [order@kojimanouen.com    ]                │
+│ パスワード       [●●●●●●●●●●●●●] [👁]                │
+│ 送信者フィルタ   [kojimamasayuki31@gmail.com] (空=全件)    │
+│ 遡り日数        [3] 日                                     │
+│                                          [保存]            │
+└────────────────────────────────────────────────────────────┘
+┌─ Gemini API ──────────────────────────────────────────────┐
+│ APIキー          [●●●●●●●●●●●●●●●●●] [👁]          │
+│                                          [保存]            │
+└────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 7. 残実装タスク（優先順）
+
+### Phase A：メール関連完成（v3 対応）
+
+| # | タスク | ファイル | 概要 |
+|---|---|---|---|
+| A1 | メール設定 保存 API | `backend/app/routers/config.py` | `PATCH /api/config/email` でDBに保存 |
+| A2 | メール設定 UI 保存 | `app/dashboard/settings/page.tsx` | A1を呼び出す保存ボタン |
+| A3 | 送信者フィルタ UI | settings ページ | email_config.sender_email を使用 |
+| A4 | テキストメール本文保存 | `email_fetch.py` | `confidence_flags.raw_text` に保存 |
+| A5 | テキストメールプレビュー | `image-viewer.tsx` | `text://` URL のとき本文カードを表示 |
+| A6 | メール件名・送信者表示 | `verification-list.tsx` | ID の代わりに件名を表示 |
+| A7 | 取得後リスト自動更新 | `email-fetch-button.tsx` | 取得完了後に `router.refresh()` |
+
+### Phase B：品質向上
+
+| # | タスク | 概要 |
 |---|---|---|
-| `email_reader.py` | `backend/app/services/email_reader.py` | None — copy as-is |
-| `pdf_generator.py` | `backend/app/services/pdf_generator.py` | None — copy as-is |
-| `config_manager.py` | `backend/app/services/config_manager.py` | Reads from Supabase tables instead of JSON files |
-| `email_config_manager.py` | `backend/app/services/email_config_manager.py` | Reads from Supabase `email_config` table |
-| `delivery_converter.py` | `backend/app/services/delivery_converter.py` | None — copy as-is |
-| `delivery_sheet_writer.py` | `backend/app/services/delivery_sheet_writer.py` | None — copy as-is |
-| `app.py` (Gemini prompt) | `backend/app/services/ocr_parser.py` | Extract prompt + `validate_and_fix_order_data()` logic |
-| `app.py` (label logic) | `backend/app/services/label_builder.py` | Extract `generate_labels_from_data()` |
+| B1 | pending の再解析ボタン | Gemini クォータ回復後に再試行できる UI |
+| B2 | 解析進捗インジケータ | Gemini 解析中のスピナー表示 |
+| B3 | エラーハンドリング強化 | IMAP 接続失敗時の詳細エラーメッセージ |
 
-### Critical Logic: The "×数字" Rule (must preserve exactly)
+### Phase C：将来実装
 
+| # | タスク | 概要 |
+|---|---|---|
+| C1 | Google Sheets 連携 | v3 の delivery_sheet_writer.py を使用 |
+| C2 | 自動メールポーリング | FastAPI BackgroundTasks で定期取得 |
+| C3 | Vercel + Railway デプロイ | 本番環境構築 |
+
+---
+
+## 8. データベーススキーマ（関連テーブル）
+
+### `ocr_verifications`
+| カラム | 型 | 説明 |
+|---|---|---|
+| id | uuid | PK |
+| tenant_id | uuid | テナント |
+| image_url | text | `https://...` (画像) または `text://{id}` (テキスト) |
+| status | OcrStatus | pending / needs_review / corrected / rejected / auto_accepted |
+| raw_ocr_json | jsonb | Gemini の生レスポンス |
+| parsed_lines | jsonb[] | 解析済み明細行 |
+| confidence_flags | jsonb | **source**, **email_id**, **subject**, **from**, **date**, **raw_text** |
+| reviewed_by | uuid | FK → profiles |
+| created_at | timestamptz | |
+
+### `email_config`
+| カラム | 型 | 説明 |
+|---|---|---|
+| id | uuid | PK |
+| tenant_id | uuid | テナント |
+| imap_server | text | 例: imap.lolipop.jp |
+| imap_port | int | 例: 993 |
+| email_address | text | order@kojimanouen.com |
+| password | text | **要暗号化** |
+| sender_email | text | フィルタ用送信者（null = 全件） |
+| days_back | int | デフォルト 3 |
+
+---
+
+## 9. コア処理ロジック（変更禁止）
+
+### 「×数字」ルール
 ```python
-# In ocr_parser.py — this logic MUST be preserved verbatim in the Gemini prompt:
-# 「×数字」が総数の品目：boxes = 総数÷unit（切り捨て）, remainder = 総数 - unit×boxes
-# Exception: items with receive_as_boxes=True (e.g. 胡瓜平箱) → ×数字 = boxes directly
+# receive_as_boxes=False（通常）: 総数 ÷ unit
+boxes = total // unit
+remainder = total - unit * boxes
 
-# In label_builder.py — this logic MUST be preserved verbatim:
-total_boxes = boxes + (1 if remainder > 0 else 0)
-# Full boxes: quantity = unit, sequence = i+1 / total_boxes, is_fraction = False
-# Last box:   quantity = remainder, sequence = total_boxes / total_boxes, is_fraction = True
+# receive_as_boxes=True（胡瓜平箱等）: ×数字 = boxes
+boxes = stated_number
+remainder = 0
 ```
 
-### Config Migration: JSON → Supabase
-v3 uses flat JSON files under `config/`. v4 maps these to existing Supabase tables:
+### ラベル生成ルール
+```python
+total_boxes = boxes + (1 if remainder > 0 else 0)
+# 通常箱: quantity=unit,  is_fraction=False
+# 端数箱: quantity=remainder, is_fraction=True
+```
 
-| v3 JSON | v4 Supabase Table |
+---
+
+## 10. リスク
+
+| リスク | 対策 |
 |---|---|
-| `stores.json` | `customers` |
-| `items.json` | `products` |
-| `units.json` | `product_standards` |
-| `item_settings.json` | `product_standards` (unit_type, receipt_mode columns) |
+| パスワード平文保存 | Supabase Vault または暗号化カラム使用 |
+| Gemini クォータ枯渇 | `status=pending` で保存し再解析ボタンを提供 |
+| IMAP SSL 証明書エラー | imaplib の `ssl_context` でホスト検証 |
+| HTML メール多様性 | html.parser + テキスト前処理でロバスト対応 |
+| 重複取得 | `email_id` を `confidence_flags` に保存して重複排除 |
 
 ---
 
-## 6. Step-by-Step Implementation Plan
-
-### Phase 1: Backend Foundation (Week 1)
-
-1. **Scaffold FastAPI project**
-   ```
-   backend/
-     app/
-       main.py          ← FastAPI app + CORS + JWT middleware
-       routers/
-         ocr.py         ← /api/ocr/*
-         orders.py      ← /api/orders/*
-         email.py       ← /api/email/*
-         config.py      ← /api/config/*
-       services/        ← migrated Python files (copy from v3)
-       models.py        ← Pydantic schemas matching DB tables
-     requirements.txt
-   ```
-
-2. **Copy all v3 service files** into `backend/app/services/` unchanged
-
-3. **Implement `POST /api/ocr/parse`**
-   - Accept `{ verification_id }`
-   - Download image from Supabase Storage
-   - Run existing Gemini logic + `validate_and_fix_order_data()`
-   - Return `{ parsed_lines, confidence_flags }`
-
-4. **Implement `POST /api/ocr/verify`**
-   - Call existing `approve_ocr_verification()` Supabase RPC
-   - Return `{ order_id }`
-
-5. **Implement `GET /api/orders/{id}/pdf`**
-   - Query order + lines from Supabase
-   - Run existing `LabelPDFGenerator`
-   - Stream as `application/pdf`
-
-6. **Implement `GET /api/email/fetch`**
-   - Run existing `email_reader.py`
-   - Upload images to Supabase Storage
-   - Insert `ocr_verifications` rows
-
-### Phase 2: Next.js Frontend (Week 2)
-
-7. **Scaffold Next.js app** (already done: `kojima-farm-app-v4`)
-
-8. **Implement `/dashboard/verifications`**
-   - Fetch pending verifications via Supabase JS client (direct RLS query)
-   - Image preview + editable table (React state)
-   - "解析" button → POST `/api/ocr/parse`
-   - "承認・PDF" button → POST `/api/ocr/verify` then GET `/api/orders/{id}/pdf`
-
-9. **Implement `/dashboard/orders`**
-   - List orders with status, date, customer summary
-   - PDF download per order
-
-10. **Implement `/dashboard/products` and `/dashboard/config`**
-    - CRUD for products, product_standards, customers
-    - Config for email settings
-
-### Phase 3: Polish & Deploy (Week 3)
-
-11. **Confidence highlighting** — amber background on cells where `confidence_flags` indicates low confidence
-12. **Email auto-poll** — configurable interval via Supabase `email_config` table; FastAPI BackgroundTasks
-13. **Google Sheets sync button** on order detail page
-14. **Deploy**: FastAPI → Railway (Dockerfile); Next.js → Vercel (automatic from repo)
-15. **E2E test**: full pipeline with real FAX image from v3 test data
-
----
-
-## 7. Risk Register
-
-| Risk | Mitigation |
-|---|---|
-| Gemini prompt produces different results after migration | Copy prompt string verbatim; add assertion tests on known FAX images |
-| PDF layout differs from v3 | Run both generators on same data; diff output visually |
-| `receive_as_boxes` logic silently broken | Unit test `label_builder.py` with 胡瓜平箱 case |
-| IMAP credentials in Supabase not encrypted at rest | Use Supabase Vault or env vars; never store in plaintext columns |
-| ReportLab `ipaexg.ttf` font path breaks in Docker | Bundle font in `backend/assets/`; use absolute path via `__file__` |
-
----
-
-## Appendix: Directory Structure (Target)
+## Appendix: ディレクトリ構成（現状）
 
 ```
 kojima-farm-app-v4/
-├── frontend/                    ← Next.js (existing app/)
-│   ├── app/
-│   │   ├── dashboard/
-│   │   │   ├── verifications/
-│   │   │   ├── orders/
-│   │   │   ├── products/
-│   │   │   └── config/
-│   │   └── login/
-│   └── lib/supabase/
-│
-└── backend/                     ← FastAPI (new)
-    ├── app/
-    │   ├── main.py
-    │   ├── routers/
-    │   ├── services/            ← v3 Python files migrated here
-    │   └── models.py
-    ├── assets/
-    │   └── ipaexg.ttf
-    └── requirements.txt
+├── app/
+│   ├── dashboard/
+│   │   ├── verifications/       ✅ 実装済み
+│   │   │   ├── page.tsx
+│   │   │   └── _components/
+│   │   │       ├── verification-dashboard.tsx
+│   │   │       ├── verification-list.tsx
+│   │   │       ├── verification-form.tsx
+│   │   │       └── image-viewer.tsx
+│   │   ├── master/              ✅ 実装済み
+│   │   ├── settings/            ⚠️ UI あり、保存API未結合
+│   │   └── _components/
+│   │       └── email-fetch-button.tsx  ✅ 実装済み
+│   ├── actions/
+│   │   └── ocr-actions.ts       ✅ 全ステータス対応
+│   └── login/                   ✅ 実装済み
+├── lib/
+│   ├── api-client.ts            ✅ fetchEmails, parseVerification, verifyOcr
+│   ├── supabase/server.ts       ✅ createClient, createServiceClient
+│   └── schemas/ocr.ts           ✅ Zod スキーマ
+├── proxy.ts                     ✅ Next.js 16 認証ミドルウェア
+└── backend/
+    └── app/
+        ├── main.py              ✅
+        ├── routers/
+        │   ├── email_fetch.py   ✅ HTML対応・重複排除
+        │   ├── ocr.py           ✅
+        │   ├── orders.py        ✅
+        │   └── config.py        ⚠️ email 保存エンドポイント未実装
+        └── services/
+            ├── email_reader.py  ✅ HTML → テキスト変換対応
+            ├── ocr_parser.py    ✅
+            └── config_manager.py ✅
 ```
-
----
-
-**Next step (pending your approval):** Begin Phase 1 — scaffold `backend/` and implement the three core API endpoints.

@@ -9,7 +9,6 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from functools import lru_cache
 
 from google import genai
 from google.genai import types as genai_types
@@ -71,26 +70,42 @@ def get_unit_label_for_item(item: str, spec: str) -> str:
 
 # ─── Gemini クライアント・モデル選択（起動後1回だけ解決してキャッシュ） ───────
 
-# 試行する優先モデルリスト
+# 試行する優先モデルリスト（gemini-2.5-flash 優先）
 _CANDIDATE_MODELS = [
-    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
+    "gemini-2.0-flash-lite",
+    "gemini-flash-latest",
 ]
 
-@lru_cache(maxsize=1)
-def _resolve_model(api_key: str) -> tuple[genai.Client, str]:
-    """Gemini クライアントと利用可能なモデル名を解決してキャッシュ。
-    API キーごとに1回だけ models.get() を呼び出す。"""
+def _is_retryable(e: Exception) -> bool:
+    """503/429/404 など別モデルで再試行すべきエラー"""
+    msg = str(e)
+    return (
+        "503" in msg or "UNAVAILABLE" in msg
+        or "429" in msg or "RESOURCE_EXHAUSTED" in msg
+        or "404" in msg or "NOT_FOUND" in msg
+    )
+
+
+def _generate_with_fallback(api_key: str, contents: list) -> str:
+    """候補モデルを順に試し、503/429 ならば次のモデルへフォールバックする。"""
     client = genai.Client(api_key=api_key)
+    last_err: Exception | None = None
     for candidate in _CANDIDATE_MODELS:
         try:
-            client.models.get(model=candidate)
-            return client, candidate
-        except Exception:
-            continue
-    raise RuntimeError("利用可能な Gemini モデルが見つかりません")
+            print(f"[Gemini] trying model: {candidate}")
+            response = client.models.generate_content(model=candidate, contents=contents)
+            print(f"[Gemini] success with model: {candidate}")
+            return response.text.strip()
+        except Exception as e:
+            print(f"[Gemini] {candidate} failed: {e}")
+            if _is_retryable(e):
+                last_err = e
+                continue
+            raise
+    raise RuntimeError(f"全モデルが利用不可です: {last_err}")
 
 
 # ─── Gemini parse ─────────────────────────────────────────────────────────────
@@ -104,8 +119,6 @@ def parse_order_image(image: Image.Image, api_key: str) -> Optional[List[Dict]]:
     Returns:
         解析結果リスト or None（失敗時）
     """
-    client, model_name = _resolve_model(api_key)
-
     known_stores = load_stores()
     item_normalization = load_items()
     item_settings_for_prompt = load_item_settings()
@@ -162,14 +175,10 @@ def parse_order_image(image: Image.Image, api_key: str) -> Optional[List[Dict]]:
     image_bytes = buf.getvalue()
     mime_type = "image/jpeg" if fmt.upper() in ("JPEG", "JPG") else f"image/{fmt.lower()}"
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=[
-            genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-            prompt,
-        ],
-    )
-    text = response.text.strip()
+    text = _generate_with_fallback(api_key, [
+        genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+        prompt,
+    ])
 
     # JSON 抽出
     if "```json" in text:
@@ -193,8 +202,6 @@ def parse_order_text(text_body: str, api_key: str) -> Optional[List[Dict]]:
     テキスト本文をそのまま Gemini に渡して注文データを解析。
     転送メールなど、FAX 画像ではなくテキスト形式の注文書に対応。
     """
-    client, model_name = _resolve_model(api_key)
-
     known_stores = load_stores()
     item_normalization = load_items()
     item_settings_for_prompt = load_item_settings()
@@ -242,11 +249,7 @@ def parse_order_text(text_body: str, api_key: str) -> Optional[List[Dict]]:
 {text_body}
 """
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=[prompt],
-    )
-    text = response.text.strip()
+    text = _generate_with_fallback(api_key, [prompt])
 
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
@@ -461,6 +464,7 @@ def generate_summary_table(order_data: List[Dict]) -> List[Dict]:
                 "spec": spec,
                 "item_display": item_display,
                 "boxes": boxes,
+                "remainder": remainder,
                 "rem_box": rem_box,
                 "total_packs": total_packs,
                 "total_quantity": total_quantity,

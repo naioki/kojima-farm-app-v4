@@ -1,10 +1,10 @@
-import { getAllVerifications } from "@/app/actions/ocr-actions";
-import { VerificationDashboard } from "./_components/verification-dashboard";
+import { getOrders } from "@/app/actions/order-actions";
+import { OrdersClient } from "./_components/orders-client";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 
-export default async function VerificationsPage() {
-  const result = await getAllVerifications();
+export default async function OrdersPage() {
+  const result = await getOrders();
 
   if (!result.success) {
     return (
@@ -18,5 +18,5 @@ export default async function VerificationsPage() {
     );
   }
 
-  return <VerificationDashboard initialVerifications={result.data} />;
+  return <OrdersClient initialOrders={result.data} />;
 }

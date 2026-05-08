@@ -6,6 +6,7 @@ import { EmailFetchButton } from "./_components/email-fetch-button";
 
 const navItems = [
   { href: "/dashboard/verifications", label: "OCR 検証" },
+  { href: "/dashboard/orders", label: "受注一覧" },
   { href: "/dashboard/master", label: "マスターデータ" },
   { href: "/dashboard/settings", label: "⚙ 設定" },
 ];

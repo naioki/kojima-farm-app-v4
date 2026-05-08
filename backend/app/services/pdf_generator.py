@@ -252,19 +252,23 @@ class LabelPDFGenerator:
         # テーブルデータの準備
         table_data = []
         # ヘッダー行
-        header_row = ["店舗名", "品目", "フル箱", "端数箱", "総数"]
+        header_row = ["店舗名", "品目", "フル箱", "端数", "合計"]
         table_data.append(header_row)
-        
-        # データ行（品目列は品目+荷姿の表示名を使用＝マスターで管理した判別しやすい名称）
+
+        # データ行
         for entry in summary_data:
             store = str(entry.get('store', ''))
             item_display = str(entry.get('item_display', entry.get('item', '')))
             boxes = str(entry.get('boxes', 0))
-            rem_box = str(entry.get('rem_box', 0))
-            total_quantity = entry.get('total_quantity', 0)
+            unit = entry.get('unit', 0)
             unit_label = entry.get('unit_label', '')
+            remainder = entry.get('rem_box', 0)  # rem_box は 0 or 1
+            # 端数は本数で表示（remainder * unit ではなく summary_data の元 remainder 値）
+            raw_remainder = entry.get('remainder', 0)
+            rem_display = f"{raw_remainder}{unit_label}" if raw_remainder > 0 else "—"
+            total_quantity = entry.get('total_quantity', 0)
             total_display = f"{total_quantity}{unit_label}" if total_quantity > 0 and unit_label else str(total_quantity)
-            table_data.append([store, item_display, boxes, rem_box, total_display])
+            table_data.append([store, item_display, boxes, rem_display, total_display])
         
         # テーブルの列幅を設定（mm単位）- A4幅（210mm）に収まるように調整
         # 左右マージン10mmずつ = 20mm、テーブル幅は190mm以内に収める
@@ -315,66 +319,49 @@ class LabelPDFGenerator:
         # テーブルを描画
         table.drawOn(c, table_x, table_y - table_height)
         
-        # 品目ごとの総数セクション用のY座標を更新
-        current_y = table_y - table_height - 10 * mm
-        
-        # 品目ごとの総数セクションを追加
-        # テーブルの下に余白を確保（A4一枚に収まるように調整）
-        summary_start_y = current_y - 8 * mm
-        
-        # 品目ごとに集計
+        # ── 納品書セクション ────────────────────────────────────────────
         from collections import defaultdict
-        item_totals = defaultdict(int)
-        item_units = {}
-        
+
+        # 品目×規格ごとに集計（入力順を保持しつつ重複を合算）
+        item_totals: dict = {}  # (item, spec) → total_quantity
+        item_units: dict = {}
         for entry in summary_data:
-            item = entry.get('item', '')
-            spec = entry.get('spec', '').strip()
-            total_quantity = entry.get('total_quantity', 0)
-            unit_label = entry.get('unit_label', '')
-            
-            # キーをitemとspecの組み合わせにする（胡瓜の3本Pとバラを別物として扱う）
-            key = (item, spec)
-            item_totals[key] += total_quantity
-            item_units[key] = unit_label
-        
-        # 品目ごとの総数セクションのタイトル
+            key = (entry.get('item', ''), entry.get('spec', '').strip())
+            item_totals[key] = item_totals.get(key, 0) + entry.get('total_quantity', 0)
+            item_units[key] = entry.get('unit_label', '')
+
+        section_start_y = table_y - table_height - 18 * mm
+
+        # セクションタイトル
         c.setFont(font_name, summary_title_font_size)
-        summary_title = f"【{shipment_date} 出荷・作成総数】"
-        c.drawString(10 * mm, summary_start_y, summary_title)
-        
-        # 品目ごとの総数を2列で表示（左半分・右半分に分割）
-        summary_y_base = summary_start_y - 14 * mm
-        row_height = 13 * mm  # 1行あたりの高さ
-        left_x = 10 * mm
-        right_x = self.A4_WIDTH / 2 + 12 * mm  # 右列は用紙中央 + 余白
-        
-        c.setFont(font_name, summary_data_font_size)
-        
-        # キーをソート（品目名→規格の順）
-        sorted_items = sorted(item_totals.items(), key=lambda x: (x[0][0], x[0][1]))
-        n = len(sorted_items)
-        mid = (n + 1) // 2  # 左列に1つ多くする場合: 0〜mid-1 が左、mid〜n-1 が右
-        left_items = sorted_items[:mid]
-        right_items = sorted_items[mid:]
-        
-        # 左列を描画（品目表示名＝品目+荷姿で統一）
-        left_y = summary_y_base
-        for (item, spec), total in left_items:
+        c.drawString(10 * mm, section_start_y, f"【{shipment_date} 出荷・納品書】")
+
+        # 納品書テーブル
+        nb_header = ["品目", "規格", "数量", "単位", "単価", "金額", "備考"]
+        nb_data = [nb_header]
+        for (item, spec), qty in item_totals.items():
             unit_label = item_units.get((item, spec), '')
-            display_name = f"{item} {spec}".strip() if spec else item
-            summary_text = f"・{display_name}：{total}{unit_label}"
-            c.drawString(left_x, left_y, summary_text)
-            left_y -= row_height
-        
-        # 右列を描画
-        right_y = summary_y_base
-        for (item, spec), total in right_items:
-            unit_label = item_units.get((item, spec), '')
-            display_name = f"{item} {spec}".strip() if spec else item
-            summary_text = f"・{display_name}：{total}{unit_label}"
-            c.drawString(right_x, right_y, summary_text)
-            right_y -= row_height
+            nb_data.append([item, spec or "—", str(qty), unit_label, "", "", ""])
+
+        nb_col_widths = [36*mm, 28*mm, 24*mm, 18*mm, 28*mm, 28*mm, 28*mm]  # 190mm
+        nb_table = Table(nb_data, colWidths=nb_col_widths)
+        nb_style = TableStyle([
+            ('GRID',        (0,0), (-1,-1), 0.8, HexColor('#888888')),
+            ('BACKGROUND',  (0,0), (-1, 0), HexColor('#D0D0D0')),
+            ('FONTNAME',    (0,0), (-1,-1), font_name),
+            ('FONTSIZE',    (0,0), (-1, 0), header_font_size - 2),
+            ('FONTSIZE',    (0,1), (-1,-1), data_font_size),
+            ('ALIGN',       (0,0), (-1, 0), 'CENTER'),
+            ('ALIGN',       (2,1), (3,-1), 'RIGHT'),
+            ('VALIGN',      (0,0), (-1,-1), 'MIDDLE'),
+            ('TOPPADDING',  (0,0), (-1,-1), 5),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 5),
+            ('ROWBACKGROUNDS',(0,1),(-1,-1),[white, HexColor('#F5F5F5')]),
+        ])
+        nb_table.setStyle(nb_style)
+        nb_w, nb_h = nb_table.wrap(0, 0)
+        nb_y = section_start_y - 8 * mm
+        nb_table.drawOn(c, 10 * mm, nb_y - nb_h)
     
     def _draw_text_in_quadrant(self, c: canvas.Canvas, text: str, font_name: str, 
                                max_font_size: int, quadrant_width: float, 
@@ -547,8 +534,7 @@ class LabelPDFGenerator:
         if shipment_date:
             center_x = x + self.LABEL_WIDTH / 2
             date_y = y + 5 * mm  # ラベル下端から5mm上にどっしり配置
-            date_font = self._get_font_name_bold()
-            c.setFont(date_font, 22)  # ラベルに合わせて拡大
+            c.setFont(font_name, 22)
             c.drawCentredString(center_x, date_y, shipment_date)
     
     def _draw_guide_lines(self, c: canvas.Canvas, x: float, y: float, 

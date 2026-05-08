@@ -159,7 +159,7 @@ async def get_order(order_id: UUID):
 # ─── GET /api/orders/{id}/pdf ────────────────────────────────────────────────
 
 @router.get("/{order_id}/pdf")
-async def download_pdf(order_id: UUID):
+async def download_pdf(order_id: UUID, reverse: int = 0):
     """
     order_lines → label list → LabelPDFGenerator → PDF stream
     """
@@ -217,6 +217,9 @@ async def download_pdf(order_id: UUID):
             "remainder": lr["remainder"],
         })
 
+    if reverse:
+        order_data = list(reversed(order_data))
+
     labels = generate_labels_from_data(order_data, order_date)
     summary_data = generate_summary_table(order_data)
 
@@ -234,11 +237,13 @@ async def download_pdf(order_id: UUID):
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-    filename = f"labels_{order_date}_{str(order_id)[:8]}.pdf"
+    date_str = order_date.replace('-', '')
+    from urllib.parse import quote
+    encoded = quote(f"出荷ラベル_{date_str}.pdf")
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
     )
 
 

@@ -42,6 +42,7 @@ class VerifyRequest(BaseModel):
     order_date: date
     corrected_lines: List[OrderLineInput]
     correction_notes: Optional[str] = None
+    reviewed_by: Optional[UUID] = None
 
 
 class VerifyResponse(BaseModel):

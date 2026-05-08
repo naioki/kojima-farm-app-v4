@@ -121,6 +121,7 @@ async def fetch_email_orders():
             filename: str = result.get("filename", "order.jpg")
             result_type: str = result.get("type", "image")
             email_id: str = str(result.get("email_id", ""))
+            subject: str = result.get("subject", "")
 
             # 重複スキップ
             if email_id and email_id in registered_email_ids:
@@ -134,11 +135,10 @@ async def fetch_email_orders():
             if result_type == "text":
                 # ── テキストメール: Gemini に直接解析させる ─────────────────
                 text_body: str = result.get("text_body", "")
-                subject: str = result.get("subject", "")
 
                 image_url = f"text://{verif_id}"  # テキストメール用ダミー URL
                 parsed_lines_with_conf = None
-                raw_ocr_json = None
+                raw_ocr_json = {}
                 status = "pending"
 
                 if api_key and text_body:
@@ -169,6 +169,7 @@ async def fetch_email_orders():
                                 "source": "text_email",
                                 "subject": subject,
                                 "email_id": email_id,
+                                "raw_text": text_body[:4000] if text_body else "",
                             },
                         }
                     ).execute()
@@ -214,9 +215,15 @@ async def fetch_email_orders():
                             "tenant_id": _DEFAULT_TENANT_ID,
                             "image_url": image_url,
                             "status": "pending",
-                            "raw_ocr_json": None,
+                            "raw_ocr_json": {},
                             "parsed_lines": [],
-                            "confidence_flags": {"source": "image_email", "email_id": email_id},
+                            "confidence_flags": {
+                                "source": "image_email",
+                                "email_id": email_id,
+                                "subject": subject,
+                                "from": str(result.get("from", "")),
+                                "date": email_date.isoformat(),
+                            },
                         }
                     ).execute()
                     verification_ids.append(UUID(verif_id))

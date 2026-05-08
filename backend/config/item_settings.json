@@ -1,16 +1,21 @@
 {
   "胡瓜": {
-    "default_unit": 30,
-    "unit_type": "袋",
-    "receive_as_boxes": false
+    "default_unit": 50,
+    "unit_type": "本",
+    "receive_as_boxes": true
   },
   "胡瓜平箱": {
     "default_unit": 30,
     "unit_type": "袋",
     "receive_as_boxes": true
   },
-  "胡瓜バラ": {
+  "胡瓜バラ(100本)": {
     "default_unit": 100,
+    "unit_type": "本",
+    "receive_as_boxes": false
+  },
+  "胡瓜バラ(50本)": {
+    "default_unit": 50,
     "unit_type": "本",
     "receive_as_boxes": false
   },

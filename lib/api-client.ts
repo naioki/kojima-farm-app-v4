@@ -36,6 +36,7 @@ export type VerifyRequest = {
   order_date: string;        // YYYY-MM-DD
   corrected_lines: CorrectedLine[];
   correction_notes?: string;
+  reviewed_by?: string;      // user.id from Next.js auth
 };
 
 export type VerifyResponse = {
@@ -44,20 +45,52 @@ export type VerifyResponse = {
 
 async function apiFetch<T>(
   path: string,
-  options?: RequestInit
+  options?: RequestInit & { timeoutMs?: number }
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API ${path} failed (${res.status}): ${text}`);
+  const { timeoutMs = 120_000, ...fetchOptions } = options ?? {};
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      ...fetchOptions,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(fetchOptions?.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      // FastAPI の {"detail": "..."} 形式を取り出す
+      try {
+        const json = JSON.parse(text);
+        if (json?.detail) throw new Error(json.detail);
+      } catch (parseErr) {
+        if (parseErr instanceof Error && parseErr.message !== text) throw parseErr;
+      }
+      throw new Error(`API ${path} failed (${res.status}): ${text}`);
+    }
+    return res.json() as Promise<T>;
+  } catch (err) {
+    if (err instanceof Error) {
+      if (err.name === "AbortError" || String(err).includes("timeout")) {
+        throw new Error(`API ${path} タイムアウト (${timeoutMs / 1000}秒超過)`);
+      }
+      if (
+        err.message.includes("ECONNREFUSED") ||
+        err.message.includes("fetch failed") ||
+        err.message.includes("Failed to fetch")
+      ) {
+        throw new Error(
+          `バックエンドサーバーに接続できません (${BASE_URL})。サーバーが起動しているか確認してください。`
+        );
+      }
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json() as Promise<T>;
 }
 
 /** Gemini でFAX画像を解析 */
@@ -67,6 +100,7 @@ export async function parseVerification(
   return apiFetch<ParseResponse>("/api/ocr/parse", {
     method: "POST",
     body: JSON.stringify({ verification_id: verificationId }),
+    timeoutMs: 180_000, // Gemini は最大3分
   });
 }
 
@@ -79,8 +113,9 @@ export async function verifyOcr(req: VerifyRequest): Promise<VerifyResponse> {
 }
 
 /** 出荷ラベル PDF の Blob を取得 */
-export async function fetchPdfBlob(orderId: string): Promise<Blob> {
-  const res = await fetch(`${BASE_URL}/api/orders/${orderId}/pdf`);
+export async function fetchPdfBlob(orderId: string, reverseStoreOrder = false): Promise<Blob> {
+  const url = `${BASE_URL}/api/orders/${orderId}/pdf${reverseStoreOrder ? "?reverse=1" : ""}`;
+  const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`PDF fetch failed (${res.status})`);
   }

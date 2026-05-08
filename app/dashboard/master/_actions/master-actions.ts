@@ -548,3 +548,178 @@ export async function deletePriceMaster(id: string): Promise<ActionResult> {
     return { success: false, error: "予期しないエラーが発生しました。" };
   }
 }
+
+// ───── 品目マスタ（products + product_standards の結合ビュー）────────
+
+export type ItemMasterRow = {
+  standard_id: string;
+  product_id: string;
+  item_name: string;
+  spec_name: string;
+  alt_names_str: string;
+  unit_size: number;
+  unit_type: string;
+  receipt_mode: string;
+};
+
+export async function getItemMaster(): Promise<ActionResult<ItemMasterRow[]>> {
+  try {
+    const ctx = await getAdminClient();
+    if ("error" in ctx) return { success: false, error: ctx.error };
+    const { supabase, profile } = ctx;
+
+    const { data: standards, error } = await supabase
+      .from("product_standards")
+      .select("id, product_id, name, unit_size, unit_type, receipt_mode, products(name, alt_names)")
+      .eq("tenant_id", profile.tenant_id)
+      .eq("is_active", true)
+      .order("name");
+
+    if (error) {
+      console.error("[getItemMaster] DBエラー:", error);
+      return { success: false, error: "品目マスタの取得に失敗しました。" };
+    }
+
+    const rows: ItemMasterRow[] = (standards ?? []).map((s: any) => ({
+      standard_id: s.id,
+      product_id: s.product_id,
+      item_name: s.products?.name ?? "",
+      spec_name: s.name,
+      alt_names_str: (s.products?.alt_names ?? []).join(", "),
+      unit_size: s.unit_size,
+      unit_type: s.unit_type,
+      receipt_mode: s.receipt_mode,
+    }));
+
+    return { success: true, data: rows };
+  } catch {
+    return { success: false, error: "予期しないエラーが発生しました。" };
+  }
+}
+
+export type SaveItemRowInput = {
+  standard_id: string | null;
+  product_id: string | null;
+  item_name: string;
+  spec_name: string;
+  alt_names_str: string;
+  unit_size: number;
+  unit_type: string;
+  receipt_mode: string;
+};
+
+export async function saveItemMasterRow(
+  input: SaveItemRowInput
+): Promise<ActionResult<ItemMasterRow>> {
+  try {
+    const ctx = await getAdminClient();
+    if ("error" in ctx) return { success: false, error: ctx.error };
+    const { supabase, profile } = ctx;
+
+    const altNames = input.alt_names_str
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    let productId = input.product_id;
+
+    if (!productId) {
+      // 同名 product が存在すれば再利用
+      const { data: existing } = await supabase
+        .from("products")
+        .select("id")
+        .eq("tenant_id", profile.tenant_id)
+        .eq("name", input.item_name)
+        .single();
+
+      if (existing) {
+        productId = existing.id;
+      } else {
+        const { data: newProd, error: prodErr } = await supabase
+          .from("products")
+          .insert({ name: input.item_name, alt_names: altNames, tenant_id: profile.tenant_id, is_active: true })
+          .select("id")
+          .single();
+        if (prodErr) return { success: false, error: "品目の登録に失敗しました。" };
+        productId = newProd.id;
+      }
+    } else {
+      // product の name / alt_names を更新
+      await supabase
+        .from("products")
+        .update({ name: input.item_name, alt_names: altNames })
+        .eq("id", productId)
+        .eq("tenant_id", profile.tenant_id);
+    }
+
+    let standardId = input.standard_id;
+    if (!standardId) {
+      // 新規 standard 作成
+      const { data: newStd, error: stdErr } = await supabase
+        .from("product_standards")
+        .insert({
+          product_id: productId!,
+          name: input.spec_name,
+          unit_size: input.unit_size,
+          unit_type: input.unit_type as any,
+          receipt_mode: input.receipt_mode as any,
+          tenant_id: profile.tenant_id,
+          is_active: true,
+        })
+        .select("id")
+        .single();
+      if (stdErr) return { success: false, error: "規格の登録に失敗しました。" };
+      standardId = newStd.id;
+    } else {
+      await supabase
+        .from("product_standards")
+        .update({
+          product_id: productId!,
+          name: input.spec_name,
+          unit_size: input.unit_size,
+          unit_type: input.unit_type as any,
+          receipt_mode: input.receipt_mode as any,
+        })
+        .eq("id", standardId)
+        .eq("tenant_id", profile.tenant_id);
+    }
+
+    revalidatePath("/dashboard/master");
+    return {
+      success: true,
+      data: {
+        standard_id: standardId!,
+        product_id: productId!,
+        item_name: input.item_name,
+        spec_name: input.spec_name,
+        alt_names_str: altNames.join(", "),
+        unit_size: input.unit_size,
+        unit_type: input.unit_type,
+        receipt_mode: input.receipt_mode,
+      },
+    };
+  } catch {
+    return { success: false, error: "予期しないエラーが発生しました。" };
+  }
+}
+
+export async function deleteItemMasterRow(standard_id: string): Promise<ActionResult> {
+  try {
+    const ctx = await getAdminClient();
+    if ("error" in ctx) return { success: false, error: ctx.error };
+    const { supabase, profile } = ctx;
+
+    const { error } = await supabase
+      .from("product_standards")
+      .update({ is_active: false })
+      .eq("id", standard_id)
+      .eq("tenant_id", profile.tenant_id);
+
+    if (error) return { success: false, error: "削除に失敗しました。" };
+
+    revalidatePath("/dashboard/master");
+    return { success: true, data: undefined };
+  } catch {
+    return { success: false, error: "予期しないエラーが発生しました。" };
+  }
+}

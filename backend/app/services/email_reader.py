@@ -12,6 +12,44 @@ from datetime import datetime, timedelta
 from PIL import Image
 import io
 import base64
+from html.parser import HTMLParser
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """HTML タグを除去してテキストだけを取り出す軽量パーサー"""
+    def __init__(self):
+        super().__init__()
+        self._chunks: list[str] = []
+        self._skip = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self._skip = True
+        elif tag in ("br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6"):
+            self._chunks.append("\n")
+        elif tag == "td":
+            self._chunks.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style"):
+            self._skip = False
+
+    def handle_data(self, data):
+        if not self._skip:
+            self._chunks.append(data)
+
+    def get_text(self) -> str:
+        text = "".join(self._chunks)
+        # 連続する空白行を圧縮
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+
+def html_to_text(html: str) -> str:
+    """HTML メール本文をプレーンテキストに変換"""
+    parser = _HTMLTextExtractor()
+    parser.feed(html)
+    return parser.get_text()
 
 def decode_mime_words(s):
     """MIMEエンコードされた文字列をデコード"""
@@ -88,26 +126,29 @@ def extract_images_from_email(msg) -> List[Dict]:
 
 def extract_text_from_email(msg) -> Optional[str]:
     """
-    メール本文からプレーンテキストを抽出。
-    転送メールの場合、転送元の本文も含む。
+    メール本文からテキストを抽出。
+    text/plain を優先し、なければ text/html をパースして返す。
     """
-    text_parts = []
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == "text/plain":
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    text_parts.append(payload.decode(charset, errors="ignore"))
-    else:
-        if msg.get_content_type() == "text/plain":
-            payload = msg.get_payload(decode=True)
-            if payload:
-                charset = msg.get_content_charset() or "utf-8"
-                text_parts.append(payload.decode(charset, errors="ignore"))
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
 
-    if text_parts:
-        return "\n".join(text_parts)
+    parts = list(msg.walk()) if msg.is_multipart() else [msg]
+    for part in parts:
+        content_type = part.get_content_type()
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        decoded = payload.decode(charset, errors="ignore")
+        if content_type == "text/plain":
+            plain_parts.append(decoded)
+        elif content_type == "text/html":
+            html_parts.append(decoded)
+
+    if plain_parts:
+        return "\n".join(plain_parts)
+    if html_parts:
+        return html_to_text("\n".join(html_parts))
     return None
 
 
@@ -192,9 +233,9 @@ def check_email_for_orders(
                             'type': 'image',
                         })
                 else:
-                    # 画像なし → テキスト本文を確認
+                    # 画像なし → テキスト/HTML本文をすべて取り込む（キーワードフィルタ廃止）
                     text_body = extract_text_from_email(msg)
-                    if text_body and has_order_keywords(text_body):
+                    if text_body and text_body.strip():
                         results.append({
                             'email_id': email_id.decode(),
                             'subject': subject,

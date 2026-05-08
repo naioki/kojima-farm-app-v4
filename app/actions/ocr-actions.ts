@@ -11,8 +11,7 @@ type ActionResult<T = void> =
   | { success: true; data: T }
   | { success: false; error: string; fieldErrors?: Record<string, string[]> }
 
-// 未処理の検証で返ってくる status は pending | needs_review のみ
-export type PendingVerificationStatus = Extract<OcrStatus, 'pending' | 'needs_review'>
+export type PendingVerificationStatus = OcrStatus
 
 export type PendingVerification = {
   id: string
@@ -41,59 +40,97 @@ export type ApproveResult = {
   lines_count: number
 }
 
-export async function getPendingVerifications(): Promise<
-  ActionResult<PendingVerification[]>
-> {
+async function _fetchVerifications(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  tenantId: string,
+  statusFilter?: string[],
+): Promise<ActionResult<PendingVerification[]>> {
+  const query = supabase
+    .from('ocr_verifications')
+    .select(`
+      id,
+      image_url,
+      status,
+      confidence_flags,
+      parsed_lines,
+      created_at,
+      reviewer:profiles!ocr_verifications_reviewed_by_fkey (
+        display_name
+      )
+    `)
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+
+  const { data, error } = statusFilter
+    ? await query.in('status', statusFilter as OcrStatus[])
+    : await query
+
+  if (error) {
+    console.error('[fetchVerifications] DBエラー:', error)
+    return { success: false, error: 'データの取得中にエラーが発生しました。' }
+  }
+  return { success: true, data: (data ?? []) as unknown as PendingVerification[] }
+}
+
+async function _getAuthProfile() {
+  const supabase = await createClient()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  if (authError || !user) return { error: 'ログインが必要です。再度ログインしてください。' } as const
+  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single()
+  if (!profile || profile.role !== 'admin') return { error: 'この操作には管理者権限が必要です。' } as const
+  const tenantId = profile.tenant_id ?? ''
+  return { supabase, profile, tenantId }
+}
+
+export async function getPendingVerifications(): Promise<ActionResult<PendingVerification[]>> {
   try {
-    const supabase = await createClient()
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: 'ログインが必要です。再度ログインしてください。' }
-    }
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single()
-
-    if (!profile || profile.role !== 'admin') {
-      return { success: false, error: 'この操作には管理者権限が必要です。' }
-    }
-
-    const { data, error } = await supabase
-      .from('ocr_verifications')
-      .select(`
-        id,
-        image_url,
-        status,
-        confidence_flags,
-        parsed_lines,
-        created_at,
-        reviewer:profiles!ocr_verifications_reviewed_by_fkey (
-          display_name
-        )
-      `)
-      .eq('tenant_id', profile.tenant_id)
-      .in('status', ['pending', 'needs_review'])
-      .order('created_at', { ascending: true })
-
-    if (error) {
-      console.error('[getPendingVerifications] DBエラー:', error)
-      return {
-        success: false,
-        error: 'データの取得中にエラーが発生しました。しばらく待ってから再試行してください。',
-      }
-    }
-
-    return { success: true, data: (data ?? []) as unknown as PendingVerification[] }
+    const auth = await _getAuthProfile()
+    if ('error' in auth) return { success: false, error: auth.error! }
+    return _fetchVerifications(auth.supabase, auth.tenantId, ['pending', 'needs_review'])
   } catch (err) {
     console.error('[getPendingVerifications] 予期しないエラー:', err)
-    return {
-      success: false,
-      error: '予期しないエラーが発生しました。システム管理者にお問い合わせください。',
-    }
+    return { success: false, error: '予期しないエラーが発生しました。' }
+  }
+}
+
+export async function getAllVerifications(): Promise<ActionResult<PendingVerification[]>> {
+  try {
+    const auth = await _getAuthProfile()
+    if ('error' in auth) return { success: false, error: auth.error! }
+    return _fetchVerifications(auth.supabase, auth.tenantId)
+  } catch (err) {
+    console.error('[getAllVerifications] 予期しないエラー:', err)
+    return { success: false, error: '予期しないエラーが発生しました。' }
+  }
+}
+
+// ─── updateRawText ──────────────────────────────────────────────────────────
+export async function updateRawText(
+  verificationId: string,
+  newText: string,
+): Promise<ActionResult> {
+  try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) return { success: false, error: 'ログインが必要です。' }
+
+    // 既存 confidence_flags を取得してマージ
+    const { data: row } = await supabase
+      .from('ocr_verifications')
+      .select('confidence_flags')
+      .eq('id', verificationId)
+      .single()
+
+    const flags = (row?.confidence_flags as Record<string, unknown>) ?? {}
+    const { error } = await supabase
+      .from('ocr_verifications')
+      .update({ confidence_flags: { ...flags, raw_text: newText } })
+      .eq('id', verificationId)
+
+    if (error) return { success: false, error: 'テキストの更新に失敗しました。' }
+    return { success: true, data: undefined }
+  } catch {
+    return { success: false, error: '予期しないエラーが発生しました。' }
   }
 }
 
@@ -119,10 +156,15 @@ export async function parseOcrVerification(
 
 // ─── approveWithFastApi ──────────────────────────────────────────────────────
 // 人間可読フォームデータ (store/item 名) を FastAPI に送り、UUID解決 + 注文作成を委譲
+type LineInput = {
+  store: string; item: string; spec: string;
+  unit: number; boxes: number; remainder: number;
+}
+
 export async function approveWithFastApi(
   verificationId: string,
   orderDate: string,
-  lines: ApiParsedLine[],
+  lines: LineInput[],
   correctionNotes?: string,
 ): Promise<ActionResult<ApproveResult>> {
   try {
@@ -134,8 +176,12 @@ export async function approveWithFastApi(
     const result = await verifyOcr({
       verification_id: verificationId,
       order_date: orderDate,
-      corrected_lines: lines,
+      corrected_lines: lines.map((l) => ({
+        store: l.store, item: l.item, spec: l.spec,
+        unit: l.unit, boxes: l.boxes, remainder: l.remainder,
+      })),
       correction_notes: correctionNotes,
+      reviewed_by: user.id,
     })
     revalidatePath('/dashboard/verifications')
     revalidatePath('/dashboard/orders')

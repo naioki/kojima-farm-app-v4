@@ -164,7 +164,7 @@ async def get_email_config():
     try:
         row = (
             sb.table("email_config")
-            .select("imap_server, email_address, sender_email, days_back")
+            .select("imap_server, imap_port, email_address, sender_email, days_back")
             .eq("tenant_id", _DEFAULT_TENANT_ID)
             .single()
             .execute()

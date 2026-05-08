@@ -1,75 +1,87 @@
 "use client";
 
-import { useForm, useFieldArray } from "react-hook-form";
+import { useForm, useFieldArray, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { useState, useTransition } from "react";
-import { Plus, Trash2, CheckCircle, Loader2, Sparkles, Download } from "lucide-react";
+import { useState, useTransition, useEffect } from "react";
+import {
+  Plus, Trash2, CheckCircle, Loader2, Sparkles, Download, AlertTriangle, ArrowUpDown,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
-import { Separator } from "@/components/ui/separator";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
+  AlertDialog, AlertDialogAction, AlertDialogCancel,
+  AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
 import { HumanFormSchema, type HumanForm, type HumanLine } from "@/lib/schemas/ocr";
-import type { ParsedLine } from "@/lib/api-client";
 import {
-  parseOcrVerification,
-  approveWithFastApi,
-  type PendingVerification,
+  parseOcrVerification, approveWithFastApi, type PendingVerification,
 } from "@/app/actions/ocr-actions";
 import { fetchPdfBlob } from "@/lib/api-client";
+import { cn } from "@/lib/utils";
 
 interface VerificationFormProps {
   verification: PendingVerification;
   onApproved?: () => void;
 }
 
+// リアルタイム合計計算（行ごと）
+function RowTotal({ control, idx }: { control: any; idx: number }) {
+  const unit      = useWatch({ control, name: `lines.${idx}.unit` });
+  const boxes     = useWatch({ control, name: `lines.${idx}.boxes` });
+  const remainder = useWatch({ control, name: `lines.${idx}.remainder` });
+  const total     = (Number(unit) || 0) * (Number(boxes) || 0) + (Number(remainder) || 0);
+  return (
+    <span className={cn("tabular-nums font-mono text-sm", total > 0 ? "font-semibold text-foreground" : "text-muted-foreground")}>
+      {total > 0 ? total : "—"}
+    </span>
+  );
+}
+
 function buildDefaultLine(line: PendingVerification["parsed_lines"][0]): HumanLine {
   return {
-    store: line.store ?? "",
-    item: line.item ?? "",
-    spec: line.spec ?? "",
-    unit: line.unit ?? 0,
-    boxes: line.boxes ?? 0,
+    store:     line.store     ?? "",
+    item:      line.item      ?? "",
+    spec:      line.spec      ?? "",
+    unit:      line.unit      ?? 0,
+    boxes:     line.boxes     ?? 0,
     remainder: line.remainder ?? 0,
   };
 }
 
-// 信頼度スコアから色を決定
-function confidenceColor(confidence?: number): string {
-  if (!confidence || confidence >= 0.9) return "";
-  if (confidence >= 0.6) return "border-amber-400 bg-amber-50";
-  return "border-red-400 bg-red-50";
-}
+const READONLY_STATUSES = ["corrected", "auto_accepted", "rejected"];
+
+const STATUS_LABELS: Record<string, string> = {
+  corrected:     "承認済み",
+  auto_accepted: "自動承認済み",
+  rejected:      "却下済み",
+};
 
 export function VerificationForm({ verification, onApproved }: VerificationFormProps) {
-  const [isPending, startTransition] = useTransition();
-  const [isParsing, startParsing] = useTransition();
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const isReadOnly = READONLY_STATUSES.includes(verification.status);
+  const [isPending,  startTransition] = useTransition();
+  const [isParsing,  startParsing]    = useTransition();
+  const [confirmOpen,  setConfirmOpen]  = useState(false);
   const [approvedOrderId, setApprovedOrderId] = useState<string | null>(null);
-  const [isPdfDownloading, setIsPdfDownloading] = useState(false);
+  const [isPdfLoading, setIsPdfLoading] = useState(false);
+  const [reverseStoreOrder, setReverseStoreOrder] = useState(false);
+
+  useEffect(() => {
+    setReverseStoreOrder(localStorage.getItem("reverseStoreOrder") === "true");
+  }, []);
+
+  function toggleReverse() {
+    setReverseStoreOrder((prev) => {
+      localStorage.setItem("reverseStoreOrder", String(!prev));
+      return !prev;
+    });
+  }
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -89,367 +101,444 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
     name: "lines",
   });
 
-  // ── Gemini 解析 ────────────────────────────────────────────────────────
+  // ── エラートースト ────────────────────────────────────────────────
+  function toastError(title: string, detail: string) {
+    toast.error(title, {
+      description: detail,
+      action: {
+        label: "コピー",
+        onClick: () => navigator.clipboard.writeText(`${title}\n${detail}`),
+      },
+      duration: 12000,
+    });
+  }
+
+  // ── Gemini 解析 ────────────────────────────────────────────────────
   function handleParse() {
     startParsing(async () => {
       const result = await parseOcrVerification(verification.id);
       if (result.success) {
         const newLines = result.data.parsed_lines.map((l) => ({
-          store: l.store,
-          item: l.item,
-          spec: l.spec ?? "",
-          unit: l.unit ?? 0,
-          boxes: l.boxes ?? 0,
+          store:     l.store,
+          item:      l.item,
+          spec:      l.spec      ?? "",
+          unit:      l.unit      ?? 0,
+          boxes:     l.boxes     ?? 0,
           remainder: l.remainder ?? 0,
         }));
         replace(newLines as HumanLine[]);
-        toast.success("Gemini 解析が完了しました", {
-          description: `${newLines.length} 行を読み取りました`,
-        });
+        toast.success(`Gemini 解析完了 — ${newLines.length} 行を読み取りました`);
       } else {
-        toast.error("Gemini 解析に失敗しました", { description: result.error });
+        toastError("Gemini 解析に失敗しました", result.error);
       }
     });
   }
 
-  // ── 承認 ──────────────────────────────────────────────────────────────
+  // ── 承認 ──────────────────────────────────────────────────────────
   function handleApprove(data: HumanForm) {
     startTransition(async () => {
       const result = await approveWithFastApi(
         verification.id,
         data.order_date,
-        data.lines as ParsedLine[],
+        data.lines,
         data.correction_notes,
       );
+      setConfirmOpen(false);
       if (result.success) {
         setApprovedOrderId(result.data.order_id);
-        toast.success(`受注を登録しました（${result.data.lines_count} 明細）`, {
+        toast.success(`受注登録完了（${result.data.lines_count} 明細）`, {
           description: `受注日: ${result.data.order_date}`,
         });
-        // PDF 自動ダウンロード
-        handlePdfDownload(result.data.order_id);
+        handlePdfDownload(result.data.order_id, result.data.order_date);
       } else {
-        toast.error("承認に失敗しました", { description: result.error });
+        toastError("承認に失敗しました", result.error);
       }
-      setConfirmOpen(false);
     });
   }
 
-  // ── PDF ダウンロード ──────────────────────────────────────────────────
-  async function handlePdfDownload(orderId?: string) {
+  // ── PDF ダウンロード ──────────────────────────────────────────────
+  async function handlePdfDownload(orderId?: string, orderDate?: string) {
     const id = orderId ?? approvedOrderId;
     if (!id) return;
-    setIsPdfDownloading(true);
+    setIsPdfLoading(true);
     try {
-      const blob = await fetchPdfBlob(id);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `labels_${id.slice(0, 8)}.pdf`;
+      const blob = await fetchPdfBlob(id, reverseStoreOrder);
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      const dateStr = (orderDate ?? "").replace(/-/g, "");
+      a.download = dateStr ? `出荷ラベル_${dateStr}.pdf` : `出荷ラベル_${id.slice(0, 8)}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      toast.error("PDF の取得に失敗しました", { description: String(err) });
+      toastError("PDF の取得に失敗しました", String(err));
     } finally {
-      setIsPdfDownloading(false);
-      // 承認完了後にリストから除去
+      setIsPdfLoading(false);
       if (orderId) onApproved?.();
     }
   }
 
-  // 承認完了状態
-  if (approvedOrderId && !isPdfDownloading) {
+  // ── 読み取り専用 ───────────────────────────────────────────────────
+  if (isReadOnly) {
     return (
-      <Card className="flex flex-col items-center justify-center h-64 gap-4">
-        <CheckCircle className="h-12 w-12 text-green-500" />
-        <p className="text-sm font-medium">受注登録完了</p>
+      <Card className="h-full flex flex-col overflow-hidden">
+        <CardHeader className="pb-2 pt-3 px-4 border-b bg-muted/30 shrink-0">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold">明細（読み取り専用）</span>
+            <Badge variant="outline" className="text-xs">
+              {STATUS_LABELS[verification.status] ?? verification.status}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="flex-1 overflow-auto p-0">
+          {verification.parsed_lines.length === 0 ? (
+            <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
+              明細データがありません
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="bg-muted sticky top-0">
+                <tr>
+                  {["店舗","品目","規格","入数","箱","バラ","合計"].map((h) => (
+                    <th key={h} className="px-3 py-2 text-left font-semibold text-muted-foreground whitespace-nowrap">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {verification.parsed_lines.map((line, idx) => (
+                  <tr key={idx} className="border-t hover:bg-muted/40 transition-colors">
+                    <td className="px-3 py-2 font-medium">{line.store || "—"}</td>
+                    <td className="px-3 py-2">{line.item}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{line.spec || "—"}</td>
+                    <td className="px-3 py-2 text-right font-mono">{line.unit}</td>
+                    <td className="px-3 py-2 text-right font-mono">{line.boxes}</td>
+                    <td className="px-3 py-2 text-right font-mono">{line.remainder}</td>
+                    <td className="px-3 py-2 text-right font-mono font-semibold text-foreground">
+                      {line.total_qty}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ── 承認完了 ───────────────────────────────────────────────────────
+  if (approvedOrderId) {
+    return (
+      <Card className="h-full flex flex-col items-center justify-center gap-5 p-8">
+        <div className="rounded-full bg-green-100 p-5">
+          <CheckCircle className="h-12 w-12 text-green-600" />
+        </div>
+        <div className="text-center space-y-1">
+          <p className="font-semibold text-lg">受注登録完了</p>
+          <p className="text-xs text-muted-foreground">
+            出荷ラベル PDF を自動ダウンロードしています
+          </p>
+        </div>
         <Button
           variant="outline"
           size="sm"
           onClick={() => handlePdfDownload()}
-          disabled={isPdfDownloading}
+          disabled={isPdfLoading}
         >
-          <Download className="h-4 w-4 mr-1" />
+          {isPdfLoading
+            ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+            : <Download className="h-4 w-4 mr-1.5" />
+          }
           PDF を再ダウンロード
         </Button>
       </Card>
     );
   }
 
+  // ── メインフォーム ────────────────────────────────────────────────
   return (
-    <Card className="flex flex-col h-full">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <CardTitle className="text-base">内容確認・修正フォーム</CardTitle>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              OCR 読み取り結果を確認し、必要に応じて修正してから承認してください。
-            </p>
+    <Card className="h-full flex flex-col overflow-hidden">
+      {/* ヘッダー */}
+      <CardHeader className="pb-0 pt-3 px-4 border-b bg-muted/30 shrink-0">
+        <div className="flex items-center justify-between pb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold">明細確認・承認</span>
+            <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-300">
+              {fields.length} 行
+            </Badge>
           </div>
-          {/* Gemini 解析ボタン */}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={handleParse}
-            disabled={isParsing || isPending}
-            className="shrink-0"
-          >
-            {isParsing ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Sparkles className="h-3.5 w-3.5" />
-            )}
-            {isParsing ? "解析中..." : "Gemini 解析"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleReverse}
+              className={cn(
+                "h-7 px-2 rounded text-[11px] flex items-center gap-1 border transition-colors",
+                reverseStoreOrder
+                  ? "bg-blue-600 text-white border-blue-600 hover:bg-blue-700"
+                  : "bg-background text-muted-foreground border-input hover:text-foreground"
+              )}
+              title="店舗順を逆にする"
+            >
+              <ArrowUpDown className="h-3 w-3" />
+              店舗逆順：{reverseStoreOrder ? "ON" : "OFF"}
+            </button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={handleParse}
+              disabled={isParsing || isPending}
+            >
+              {isParsing
+                ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />解析中...</>
+                : <><Sparkles className="h-3 w-3 mr-1" />Gemini 解析</>
+              }
+            </Button>
+          </div>
         </div>
       </CardHeader>
 
-      <Form {...form}>
-        <form
-          onSubmit={form.handleSubmit(() => setConfirmOpen(true))}
-          className="flex flex-col flex-1"
-        >
-          <CardContent className="flex-1 space-y-5 overflow-auto">
-            {/* 受注日 */}
-            <FormField
-              control={form.control}
-              name="order_date"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>受注日 *</FormLabel>
-                  <FormControl>
-                    <Input type="date" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
+      <form
+        onSubmit={form.handleSubmit(() => setConfirmOpen(true))}
+        className="flex flex-col flex-1 overflow-hidden"
+      >
+        <CardContent className="flex-1 overflow-hidden p-0 flex flex-col">
+
+          {/* 受注日 */}
+          <div className="px-4 py-2 border-b bg-background shrink-0 flex items-center gap-3">
+            <label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
+              受注日
+            </label>
+            <Input
+              type="date"
+              className="h-7 text-xs w-40"
+              {...form.register("order_date")}
             />
+            {form.formState.errors.order_date && (
+              <span className="text-xs text-destructive">
+                {form.formState.errors.order_date.message}
+              </span>
+            )}
+          </div>
 
-            <Separator />
+          {/* 明細テーブル */}
+          <div className="flex-1 overflow-auto">
+            <table className="w-full text-xs border-separate border-spacing-0">
+              <thead className="bg-muted/80 sticky top-0 z-10">
+                <tr>
+                  <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-8">#</th>
+                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[80px]">店舗</th>
+                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[80px]">品目</th>
+                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[60px]">規格</th>
+                  <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">入数</th>
+                  <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">箱</th>
+                  <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">バラ</th>
+                  <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">合計</th>
+                  <th className="w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {fields.map((field, idx) => {
+                  const conf     = (verification.parsed_lines[idx] as any)?.confidence;
+                  const isLowConf = conf !== undefined && conf < 0.9;
+                  const storeErr  = form.formState.errors.lines?.[idx]?.store;
+                  const itemErr   = form.formState.errors.lines?.[idx]?.item;
 
-            {/* 明細行 */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">明細（{fields.length} 行）</p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    append({ store: "", item: "", spec: "", unit: 0, boxes: 0, remainder: 0 })
-                  }
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  行を追加
-                </Button>
-              </div>
-
-              {fields.map((field, idx) => {
-                const conf = (verification.parsed_lines[idx] as { confidence?: number } | undefined)?.confidence;
-                const rowClass = `rounded-lg border p-3 space-y-2.5 relative transition-colors ${confidenceColor(conf)}`;
-                return (
-                  <div key={field.id} className={rowClass}>
-                    {/* 行ヘッダー */}
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-semibold text-muted-foreground">
-                        明細 {idx + 1}
-                        {conf !== undefined && conf < 0.9 && (
-                          <Badge variant="outline" className="ml-2 text-amber-600 border-amber-400 text-[10px] py-0">
-                            要確認
-                          </Badge>
-                        )}
-                      </p>
-                      {fields.length > 1 && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 text-destructive hover:text-destructive"
-                          onClick={() => remove(idx)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                  return (
+                    <tr
+                      key={field.id}
+                      className={cn(
+                        "border-t transition-colors hover:bg-muted/20",
+                        isLowConf && "bg-amber-50/70"
                       )}
-                    </div>
+                    >
+                      {/* 行番号 / 要確認マーク */}
+                      <td className="px-2 py-1 text-center text-muted-foreground">
+                        {isLowConf
+                          ? <span title="要確認"><AlertTriangle className="h-3.5 w-3.5 text-amber-500 mx-auto" /></span>
+                          : <span className="text-[11px]">{idx + 1}</span>
+                        }
+                      </td>
 
-                    {/* 店舗 / 品目 / 規格 */}
-                    <div className="grid grid-cols-3 gap-2">
-                      <FormField
-                        control={form.control}
-                        name={`lines.${idx}.store`}
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">店舗 *</FormLabel>
-                            <FormControl>
-                              <Input placeholder="鎌ケ谷" className="text-xs h-8" {...field} />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                      <FormField
-                        control={form.control}
-                        name={`lines.${idx}.item`}
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">品目 *</FormLabel>
-                            <FormControl>
-                              <Input placeholder="胡瓜" className="text-xs h-8" {...field} />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                      <FormField
-                        control={form.control}
-                        name={`lines.${idx}.spec`}
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">規格</FormLabel>
-                            <FormControl>
-                              <Input placeholder="バラ" className="text-xs h-8" {...field} />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </div>
+                      {/* 店舗 */}
+                      <td className="px-1 py-0.5">
+                        <Input
+                          className={cn(
+                            "h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2",
+                            storeErr && "border-destructive"
+                          )}
+                          placeholder="店舗名"
+                          {...form.register(`lines.${idx}.store`)}
+                        />
+                      </td>
 
-                    {/* 入数 / 箱数 / バラ */}
-                    <div className="grid grid-cols-3 gap-2">
-                      <FormField
-                        control={form.control}
-                        name={`lines.${idx}.unit`}
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">入数</FormLabel>
-                            <FormControl>
-                              <Input
-                                type="number"
-                                min={0}
-                                className="text-xs h-8"
-                                {...field}
-                                onChange={(e) => field.onChange(e.target.valueAsNumber)}
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                      <FormField
-                        control={form.control}
-                        name={`lines.${idx}.boxes`}
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">箱数</FormLabel>
-                            <FormControl>
-                              <Input
-                                type="number"
-                                min={0}
-                                className="text-xs h-8"
-                                {...field}
-                                onChange={(e) => field.onChange(e.target.valueAsNumber)}
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                      <FormField
-                        control={form.control}
-                        name={`lines.${idx}.remainder`}
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">バラ数</FormLabel>
-                            <FormControl>
-                              <Input
-                                type="number"
-                                min={0}
-                                className="text-xs h-8"
-                                {...field}
-                                onChange={(e) => field.onChange(e.target.valueAsNumber)}
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                      {/* 品目 */}
+                      <td className="px-1 py-0.5">
+                        <Input
+                          className={cn(
+                            "h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2",
+                            itemErr && "border-destructive"
+                          )}
+                          placeholder="品目名"
+                          {...form.register(`lines.${idx}.item`)}
+                        />
+                      </td>
 
-            <Separator />
+                      {/* 規格 */}
+                      <td className="px-1 py-0.5">
+                        <Input
+                          className="h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2"
+                          placeholder="—"
+                          {...form.register(`lines.${idx}.spec`)}
+                        />
+                      </td>
 
-            {/* 修正メモ */}
-            <FormField
-              control={form.control}
-              name="correction_notes"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>修正メモ（任意）</FormLabel>
-                  <FormControl>
-                    <Textarea
-                      placeholder="OCR 結果から修正した箇所や理由を記録"
-                      className="resize-none"
-                      rows={2}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
+                      {/* 入数 */}
+                      <td className="px-1 py-0.5">
+                        <Input
+                          type="number" min={0}
+                          className="h-7 text-xs text-center border-transparent bg-transparent focus:bg-background focus:border-input px-1"
+                          {...form.register(`lines.${idx}.unit`, { valueAsNumber: true })}
+                        />
+                      </td>
+
+                      {/* 箱数 */}
+                      <td className="px-1 py-0.5">
+                        <Input
+                          type="number" min={0}
+                          className="h-7 text-xs text-center border-transparent bg-transparent focus:bg-background focus:border-input px-1"
+                          {...form.register(`lines.${idx}.boxes`, { valueAsNumber: true })}
+                        />
+                      </td>
+
+                      {/* バラ */}
+                      <td className="px-1 py-0.5">
+                        <Input
+                          type="number" min={0}
+                          className="h-7 text-xs text-center border-transparent bg-transparent focus:bg-background focus:border-input px-1"
+                          {...form.register(`lines.${idx}.remainder`, { valueAsNumber: true })}
+                        />
+                      </td>
+
+                      {/* 合計（リアルタイム計算） */}
+                      <td className="px-2 py-1 text-center">
+                        <RowTotal control={form.control} idx={idx} />
+                      </td>
+
+                      {/* 削除ボタン */}
+                      <td className="px-1 py-0.5 text-center">
+                        {fields.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => remove(idx)}
+                            className="h-6 w-6 rounded flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors mx-auto"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 行追加 + 修正メモ */}
+          <div className="shrink-0 border-t px-4 py-3 space-y-2 bg-background">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-muted-foreground hover:text-foreground -ml-2"
+              onClick={() =>
+                append({ store: "", item: "", spec: "", unit: 0, boxes: 0, remainder: 0 })
+              }
+            >
+              <Plus className="h-3.5 w-3.5 mr-1" />行を追加
+            </Button>
+            <Textarea
+              placeholder="修正メモ（任意）— OCR から修正した箇所など"
+              className="text-xs resize-none h-14 min-h-0"
+              {...form.register("correction_notes")}
             />
-          </CardContent>
+          </div>
+        </CardContent>
 
-          <CardFooter className="border-t pt-4">
-            <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-              <AlertDialogTrigger asChild>
-                <Button type="submit" className="w-full" disabled={isPending || isParsing}>
-                  {isPending ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      処理中...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle className="h-4 w-4" />
-                      内容を確認して承認 ＆ PDF
-                    </>
-                  )}
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>承認の確認</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    入力内容で受注を登録し、出荷ラベル PDF を自動ダウンロードします。
-                    この操作は取り消せません。
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={isPending}>キャンセル</AlertDialogCancel>
-                  <AlertDialogAction
-                    disabled={isPending}
-                    onClick={form.handleSubmit(handleApprove)}
-                  >
-                    {isPending ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        処理中...
-                      </>
-                    ) : (
-                      "承認する"
-                    )}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </CardFooter>
-        </form>
-      </Form>
+        {/* フッター: 承認ボタン */}
+        <CardFooter className="border-t px-4 py-3 shrink-0">
+          <Button
+            type="submit"
+            className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold"
+            disabled={isPending || isParsing}
+          >
+            {isPending
+              ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />処理中...</>
+              : <><CheckCircle className="h-4 w-4 mr-1.5" />承認 ＆ PDF 発行</>
+            }
+          </Button>
+        </CardFooter>
+      </form>
+
+      {/* 承認確認ダイアログ */}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>受注内容の最終確認</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 text-sm">
+                <p className="text-muted-foreground">
+                  以下の内容で受注を登録し、出荷ラベル PDF を発行します。
+                  この操作は取り消せません。
+                </p>
+                <div className="rounded-lg border bg-muted/30 overflow-hidden">
+                  <div className="px-3 py-2 bg-muted/60 flex items-center gap-2 border-b">
+                    <span className="text-xs font-semibold">
+                      受注日: {form.getValues("order_date")}
+                    </span>
+                    <Badge variant="outline" className="text-[10px] ml-auto">
+                      {form.getValues("lines").length} 明細
+                    </Badge>
+                  </div>
+                  <div className="max-h-44 overflow-auto divide-y">
+                    {form.getValues("lines").map((line, i) => {
+                      const total = (line.unit || 0) * (line.boxes || 0) + (line.remainder || 0);
+                      return (
+                        <div key={i} className="px-3 py-1.5 flex items-center gap-2 text-xs">
+                          <span className="font-medium w-20 truncate text-foreground">{line.store || "—"}</span>
+                          <span className="text-muted-foreground flex-1 truncate">
+                            {line.item}{line.spec ? ` (${line.spec})` : ""}
+                          </span>
+                          <span className="font-mono text-xs shrink-0">
+                            {line.boxes}箱{line.remainder > 0 ? `+${line.remainder}` : ""}
+                            <span className="text-muted-foreground ml-1">= {total}</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isPending}>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-green-600 hover:bg-green-700"
+              disabled={isPending}
+              onClick={form.handleSubmit(handleApprove)}
+            >
+              {isPending
+                ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />処理中...</>
+                : "承認する"
+              }
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

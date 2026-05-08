@@ -3,24 +3,25 @@ import {
   getProducts,
   getProductStandards,
   getPriceMaster,
+  getItemMaster,
 } from "./_actions/master-actions";
 import { CustomersTab } from "./_components/customers-tab";
 import { ProductsTab } from "./_components/products-tab";
 import { ProductStandardsTab } from "./_components/product-standards-tab";
 import { PriceMasterTab } from "./_components/price-master-tab";
+import { ItemMasterTab } from "./_components/item-master-tab";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 
-export const runtime = "edge";
-
 export default async function MasterPage() {
-  const [customersResult, productsResult, standardsResult, pricesResult] =
+  const [customersResult, productsResult, standardsResult, pricesResult, itemMasterResult] =
     await Promise.all([
       getCustomers(),
       getProducts(),
       getProductStandards(),
       getPriceMaster(),
+      getItemMaster(),
     ]);
 
   const hasError =
@@ -51,21 +52,28 @@ export default async function MasterPage() {
         </Alert>
       )}
 
-      <Tabs defaultValue="customers">
+      <Tabs defaultValue="item-master">
         <TabsList>
+          <TabsTrigger value="item-master">
+            📦 品目マスタ{itemMasterResult.success ? ` (${itemMasterResult.data.length})` : ""}
+          </TabsTrigger>
           <TabsTrigger value="customers">
             顧客{customersResult.success ? ` (${customersResult.data.length})` : ""}
           </TabsTrigger>
           <TabsTrigger value="products">
-            商品{productsResult.success ? ` (${productsResult.data.length})` : ""}
+            商品
           </TabsTrigger>
           <TabsTrigger value="standards">
-            規格{standardsResult.success ? ` (${standardsResult.data.length})` : ""}
+            規格
           </TabsTrigger>
           <TabsTrigger value="prices">
             価格マスター{pricesResult.success ? ` (${pricesResult.data.length})` : ""}
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="item-master" className="mt-4">
+          <ItemMasterTab initialRows={itemMasterResult.success ? itemMasterResult.data : []} />
+        </TabsContent>
 
         <TabsContent value="customers" className="mt-4">
           <CustomersTab customers={customersResult.success ? customersResult.data : []} />
