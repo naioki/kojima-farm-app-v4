@@ -154,7 +154,7 @@ class LabelPDFGenerator:
         shipment_date_display = f"{shipment_date_obj.month}月{shipment_date_obj.day}日"  # 口数と区別するため漢字表記
         
         # 1ページ目：出荷一覧表
-        self._draw_summary_page(c, summary_data, shipment_date_display, font_name)
+        self._draw_summary_page(c, summary_data, shipment_date, font_name)
         
         # 出荷一覧表の後に改ページ（ラベルページと分離）
         c.showPage()
@@ -232,96 +232,184 @@ class LabelPDFGenerator:
         
         c.save()
     
-    def _draw_summary_page(self, c: canvas.Canvas, summary_data: List[Dict], 
-                          shipment_date: str, font_name: str):
+    def _draw_summary_page(self, c: canvas.Canvas, summary_data: List[Dict],
+                          raw_shipment_date: str, font_name: str):
         """出荷一覧表ページを描画（TableオブジェクトとTableStyleを使用）"""
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.platypus import Paragraph
-        
+        from collections import OrderedDict
+
+        # 出荷日の解析とフォーマット
+        from datetime import datetime
+        try:
+            dt = datetime.strptime(raw_shipment_date, '%Y-%m-%d')
+            full_date_str = f"{dt.year}年{dt.month}月{dt.day}日"
+            display_date_str = f"{dt.month}月{dt.day}日"
+        except Exception:
+            full_date_str = raw_shipment_date
+            display_date_str = raw_shipment_date
+
         # フォントサイズを調整（A4一枚に確実に収まるように最適化）
         title_font_size = 26
         header_font_size = 16
         data_font_size = 14
-        summary_title_font_size = 17
-        summary_data_font_size = 14
-        
+
         # タイトル（上マージン最小限に）
         c.setFont(font_name, title_font_size)
-        c.drawString(10 * mm, self.A4_HEIGHT - 22 * mm, f"【出荷一覧表】 {shipment_date}")
-        
-        # テーブルデータの準備
-        table_data = []
-        # ヘッダー行
-        header_row = ["店舗名", "品目", "フル箱", "端数", "合計"]
-        table_data.append(header_row)
+        c.drawString(10 * mm, self.A4_HEIGHT - 22 * mm, f"【出荷一覧表】 {display_date_str}")
 
-        # データ行
+        # 店舗別コンテナ合計を事前計算（順序保持）
+        store_containers: "OrderedDict[str, int]" = OrderedDict()
+        for entry in summary_data:
+            s = str(entry.get('store', ''))
+            boxes = int(entry.get('boxes', 0))
+            rem_box = 1 if int(entry.get('remainder', 0)) > 0 else 0
+            store_containers[s] = store_containers.get(s, 0) + boxes + rem_box
+
+        # 5列テーブル（コンテナ列はSPANを避けてcanvasで手描き）
+        styles = getSampleStyleSheet()
+        store_style = ParagraphStyle(
+            'StoreStyle',
+            parent=styles['Normal'],
+            fontName=font_name,
+            fontSize=data_font_size,
+            leading=data_font_size + 2,
+            textColor=black
+        )
+        item_style = ParagraphStyle(
+            'ItemStyle',
+            parent=styles['Normal'],
+            fontName=font_name,
+            fontSize=data_font_size,
+            leading=data_font_size + 2,
+            textColor=black
+        )
+
+        header_row = ["店舗名", "品目", "フル箱", "端数箱", "合計"]
+        table_data = [header_row]
+        store_first_row: dict = {}  # store -> 先頭行インデックス
+        store_last_row: dict  = {}  # store -> 末尾行インデックス
+
+        prev_store: str | None = None
         for entry in summary_data:
             store = str(entry.get('store', ''))
             item_display = str(entry.get('item_display', entry.get('item', '')))
-            boxes = str(entry.get('boxes', 0))
-            unit = entry.get('unit', 0)
+            boxes = int(entry.get('boxes', 0))
             unit_label = entry.get('unit_label', '')
-            remainder = entry.get('rem_box', 0)  # rem_box は 0 or 1
-            # 端数は本数で表示（remainder * unit ではなく summary_data の元 remainder 値）
-            raw_remainder = entry.get('remainder', 0)
+            raw_remainder = int(entry.get('remainder', 0))
             rem_display = f"{raw_remainder}{unit_label}" if raw_remainder > 0 else "—"
             total_quantity = entry.get('total_quantity', 0)
             total_display = f"{total_quantity}{unit_label}" if total_quantity > 0 and unit_label else str(total_quantity)
-            table_data.append([store, item_display, boxes, rem_display, total_display])
-        
-        # テーブルの列幅を設定（mm単位）- A4幅（210mm）に収まるように調整
-        # 左右マージン10mmずつ = 20mm、テーブル幅は190mm以内に収める
-        col_widths = [42 * mm, 52 * mm, 30 * mm, 30 * mm, 36 * mm]  # 合計190mm
-        # 行の高さを調整（A4一枚に確実に収まるように）
-        row_height = 15 * mm
-        
-        # Tableオブジェクトを作成
+
+            row_idx = len(table_data)
+            if store not in store_first_row:
+                store_first_row[store] = row_idx
+            store_last_row[store] = row_idx
+
+            store_display = store if store != prev_store else ""
+            table_data.append([
+                Paragraph(store_display, store_style) if store_display else "",
+                Paragraph(item_display, item_style) if item_display else "",
+                str(boxes),
+                rem_display,
+                total_display
+            ])
+            prev_store = store
+
+        # 合計行を追加（全店舗コンテナ総数）
+        total_containers = sum(store_containers.values())
+        total_row_idx = len(table_data)
+        table_data.append(["合計", "", "", "", ""])
+
+        # 列幅（5列: 合計168mm、残り22mmをコンテナ列として手描き）
+        col_widths = [38 * mm, 48 * mm, 26 * mm, 26 * mm, 30 * mm]  # 合計 168mm
+        container_col_w = 22 * mm
+
         table = Table(table_data, colWidths=col_widths, repeatRows=1)
-        
-        # TableStyleを設定（視認性を最大化）
         table_style = TableStyle([
-            # グリッド線（全体）- 太めの線で見やすく
-            ('GRID', (0, 0), (-1, -1), 1.0, HexColor('#666666')),  # 濃いグレーで太めの線
-            
-            # ヘッダー行のスタイル（1行目、インデックス0）
-            ('BACKGROUND', (0, 0), (-1, 0), HexColor('#C0C0C0')),  # より濃い灰色の背景で視認性向上
-            ('TEXTCOLOR', (0, 0), (-1, 0), black),
-            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),  # 中央揃え
-            ('FONTNAME', (0, 0), (-1, 0), font_name),
-            ('FONTSIZE', (0, 0), (-1, 0), header_font_size),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-            ('TOPPADDING', (0, 0), (-1, 0), 8),
-            
-            # データ行のスタイル
-            ('FONTNAME', (0, 1), (-1, -1), font_name),
-            ('FONTSIZE', (0, 1), (-1, -1), data_font_size),
-            ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [white, HexColor('#F0F0F0')]),  # 1行おきに色を変える（白と薄い灰色、コントラスト向上）
-            
-            # 行の高さとパディング（A4一枚に確実に収まるように最適化）
-            ('LEFTPADDING', (0, 0), (-1, -1), 4),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-            ('TOPPADDING', (0, 1), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
+            ('GRID',          (0, 0), (-1, -1), 1.0, HexColor('#666666')),
+            ('BACKGROUND',    (0, 0), (-1,  0), HexColor('#C0C0C0')),
+            ('TEXTCOLOR',     (0, 0), (-1,  0), black),
+            ('ALIGN',         (0, 0), (-1,  0), 'CENTER'),
+            ('FONTNAME',      (0, 0), (-1,  0), font_name),
+            ('FONTSIZE',      (0, 0), (-1,  0), header_font_size),
+            ('BOTTOMPADDING', (0, 0), (-1,  0), 8),
+            ('TOPPADDING',    (0, 0), (-1,  0), 8),
+            ('FONTNAME',      (0, 1), (-1, -1), font_name),
+            ('FONTSIZE',      (0, 1), (-1, -1), data_font_size),
+            ('ALIGN',         (0, 1), (-1, -1), 'LEFT'),
+            ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+            ('ROWBACKGROUNDS',(0, 1), (-1, -2), [white, HexColor('#F0F0F0')]),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
+            ('TOPPADDING',    (0, 1), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 5),
+            # 合計行スタイル
+            ('BACKGROUND',    (0, total_row_idx), (-1, total_row_idx), HexColor('#DCDCDC')),
+            ('FONTSIZE',      (0, total_row_idx), (-1, total_row_idx), data_font_size),
+            ('ALIGN',         (0, total_row_idx), (-1, total_row_idx), 'CENTER'),
+            ('TOPPADDING',    (0, total_row_idx), (-1, total_row_idx), 7),
+            ('BOTTOMPADDING', (0, total_row_idx), (-1, total_row_idx), 7),
         ])
-        
         table.setStyle(table_style)
-        
-        # テーブルのサイズを計算
-        table_width, table_height = table.wrap(0, 0)
-        
-        # テーブルを描画する位置を計算（左右マージン10mm）
+
         table_x = 10 * mm
         table_y = self.A4_HEIGHT - 48 * mm
-        
-        # テーブルを描画
+        table_width, table_height = table.wrap(0, 0)
         table.drawOn(c, table_x, table_y - table_height)
-        
-        # ── 納品書セクション ────────────────────────────────────────────
-        from collections import defaultdict
 
+        # ── コンテナ列を canvas で手描き ────────────────────────────────
+        row_heights = table._rowHeights  # wrap() 後に確定
+        cont_x = table_x + sum(col_widths)        # コンテナ列左端
+        cont_cx = cont_x + container_col_w / 2   # コンテナ列中央X
+
+        # ヘッダーセル
+        hdr_h = row_heights[0]
+        hdr_y = table_y - hdr_h
+        c.setFillColor(HexColor('#C0C0C0'))
+        c.setStrokeColor(HexColor('#666666'))
+        c.setLineWidth(1.0)
+        c.rect(cont_x, hdr_y, container_col_w, hdr_h, stroke=1, fill=1)
+        c.setFillColor(black)
+        c.setFont(font_name, header_font_size)
+        c.drawCentredString(cont_cx, hdr_y + (hdr_h - header_font_size * 0.7) / 2, "コンテナ")
+
+        # 各店舗のコンテナ数セルを手描き（店舗グループをまとめた1セル）
+        c.setStrokeColor(HexColor('#666666'))
+        c.setLineWidth(1.0)
+        for store, first_row in store_first_row.items():
+            last_row = store_last_row[store]
+            # グループの上端Y・下端Y を計算
+            top_y    = table_y - sum(row_heights[:first_row])
+            bottom_y = table_y - sum(row_heights[:last_row + 1])
+            cell_h   = top_y - bottom_y
+            # セル枠（背景は白）
+            c.setFillColor(white)
+            c.rect(cont_x, bottom_y, container_col_w, cell_h, stroke=1, fill=1)
+            # コンテナ数テキスト（黒・大・中央）
+            text = str(store_containers[store])
+            font_sz = data_font_size + 8
+            text_y  = bottom_y + (cell_h - font_sz * 0.7) / 2
+            c.setFillColor(black)
+            c.setFont(font_name, font_sz)
+            c.drawCentredString(cont_cx, text_y, text)
+
+        # ── 合計コンテナセル（最終行）────────────────────────────────────
+        total_top_y    = table_y - sum(row_heights[:total_row_idx])
+        total_bottom_y = table_y - sum(row_heights[:total_row_idx + 1])
+        total_cell_h   = total_top_y - total_bottom_y
+        # 濃いグレー背景・白テキスト
+        c.setFillColor(HexColor('#3A3A3A'))
+        c.setStrokeColor(HexColor('#666666'))
+        c.setLineWidth(1.0)
+        c.rect(cont_x, total_bottom_y, container_col_w, total_cell_h, stroke=1, fill=1)
+        c.setFillColor(white)
+        total_font_sz = data_font_size + 8
+        total_text_y  = total_bottom_y + (total_cell_h - total_font_sz * 0.7) / 2
+        c.setFont(font_name, total_font_sz)
+        c.drawCentredString(cont_cx, total_text_y, str(total_containers))
+        
+        # ── 納品書セクションの計算と描画 ────────────────────────────────
         # 品目×規格ごとに集計（入力順を保持しつつ重複を合算）
         item_totals: dict = {}  # (item, spec) → total_quantity
         item_units: dict = {}
@@ -330,13 +418,7 @@ class LabelPDFGenerator:
             item_totals[key] = item_totals.get(key, 0) + entry.get('total_quantity', 0)
             item_units[key] = entry.get('unit_label', '')
 
-        section_start_y = table_y - table_height - 18 * mm
-
-        # セクションタイトル
-        c.setFont(font_name, summary_title_font_size)
-        c.drawString(10 * mm, section_start_y, f"【{shipment_date} 出荷・納品書】")
-
-        # 納品書テーブル
+        # 納品書テーブルを先に構築して高さを測定
         nb_header = ["品目", "規格", "数量", "単位", "単価", "金額", "備考"]
         nb_data = [nb_header]
         for (item, spec), qty in item_totals.items():
@@ -345,22 +427,79 @@ class LabelPDFGenerator:
 
         nb_col_widths = [36*mm, 28*mm, 24*mm, 18*mm, 28*mm, 28*mm, 28*mm]  # 190mm
         nb_table = Table(nb_data, colWidths=nb_col_widths)
+        nb_table.setStyle(TableStyle([
+            ('FONTNAME',    (0,0), (-1,-1), font_name),
+            ('FONTSIZE',    (0,0), (-1, 0), 12),
+            ('FONTSIZE',    (0,1), (-1,-1), 10),
+            ('TOPPADDING',  (0,0), (-1,-1), 3),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 3),
+        ]))
+        _, nb_h = nb_table.wrap(0, 0)
+
+        # 納品書が必要とする総高さの計算
+        gap_before = 16 * mm  # キリトリ用の空白マージン（十分なスペースを確保）
+        nb_header_h = 10 * mm
+        nb_header_gap = 8 * mm
+        bottom_margin = 15 * mm
+        required_height = gap_before + nb_header_h + nb_header_gap + nb_h + bottom_margin
+
+        table_bottom_y = table_y - table_height
+        fits_on_one_page = (table_bottom_y >= required_height)
+
+        if fits_on_one_page:
+            # ── 1枚に収まる場合：キリトリ線を描画して配置 ──
+            cut_y = table_bottom_y - (gap_before / 2)
+            c.setStrokeColor(gray, alpha=0.5)
+            c.setLineWidth(0.8)
+            c.setDash([6, 4])
+            c.line(10 * mm, cut_y, self.A4_WIDTH - 10 * mm, cut_y)
+            c.setDash()  # リセット
+            
+            c.setFont(font_name, 8)
+            c.setFillColor(gray)
+            c.drawCentredString(self.A4_WIDTH / 2, cut_y + 1.5 * mm, "8< - - - - - - - - - - キ リ ト リ - - - - - - - - - - 8<")
+            c.setFillColor(black)
+
+            delivery_start_y = table_bottom_y - gap_before
+            self._draw_delivery_slip_section(c, full_date_str, font_name, delivery_start_y, nb_table, nb_h)
+        else:
+            # ── 1枚に収まらない場合：2ページ目に丸ごと改ページして配置（キリトリ線なし） ──
+            c.showPage()
+            delivery_start_y = self.A4_HEIGHT - 22 * mm
+            self._draw_delivery_slip_section(c, full_date_str, font_name, delivery_start_y, nb_table, nb_h)
+
+    def _draw_delivery_slip_section(self, c: canvas.Canvas, full_date_str: str,
+                                    font_name: str, start_y: float,
+                                    nb_table: Table, nb_h: float):
+        """納品書セクションを描画するヘルパー"""
+        summary_title_font_size = 14
+        header_font_size = 12
+        summary_data_font_size = 10
+        
+        # セクションタイトル
+        c.setFont(font_name, summary_title_font_size)
+        c.drawString(10 * mm, start_y, "【納品書】")
+        
+        # 日付 (右寄せ)
+        c.setFont(font_name, 10)
+        c.drawRightString(self.A4_WIDTH - 10 * mm, start_y + 4 * mm, f"日付: {full_date_str}")
+        
+        # 納品書テーブルを描画
         nb_style = TableStyle([
             ('GRID',        (0,0), (-1,-1), 0.8, HexColor('#888888')),
             ('BACKGROUND',  (0,0), (-1, 0), HexColor('#D0D0D0')),
             ('FONTNAME',    (0,0), (-1,-1), font_name),
-            ('FONTSIZE',    (0,0), (-1, 0), header_font_size - 2),
-            ('FONTSIZE',    (0,1), (-1,-1), data_font_size),
+            ('FONTSIZE',    (0,0), (-1, 0), header_font_size),
+            ('FONTSIZE',    (0,1), (-1,-1), summary_data_font_size),
             ('ALIGN',       (0,0), (-1, 0), 'CENTER'),
             ('ALIGN',       (2,1), (3,-1), 'RIGHT'),
             ('VALIGN',      (0,0), (-1,-1), 'MIDDLE'),
-            ('TOPPADDING',  (0,0), (-1,-1), 5),
-            ('BOTTOMPADDING',(0,0),(-1,-1), 5),
+            ('TOPPADDING',  (0,0), (-1,-1), 3),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 3),
             ('ROWBACKGROUNDS',(0,1),(-1,-1),[white, HexColor('#F5F5F5')]),
         ])
         nb_table.setStyle(nb_style)
-        nb_w, nb_h = nb_table.wrap(0, 0)
-        nb_y = section_start_y - 8 * mm
+        nb_y = start_y - 8 * mm
         nb_table.drawOn(c, 10 * mm, nb_y - nb_h)
     
     def _draw_text_in_quadrant(self, c: canvas.Canvas, text: str, font_name: str, 

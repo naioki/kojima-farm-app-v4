@@ -221,10 +221,13 @@ def check_email_for_orders(
                 # 画像抽出
                 images = extract_images_from_email(msg)
 
+                # Message-ID ヘッダーを優先（セッション間で不変の一意識別子）
+                message_id = (msg.get("Message-ID") or email_id.decode()).strip()
+
                 if images:
                     for img_info in images:
                         results.append({
-                            'email_id': email_id.decode(),
+                            'email_id': message_id,
                             'subject': subject,
                             'from': from_addr,
                             'date': date,
@@ -237,7 +240,7 @@ def check_email_for_orders(
                     text_body = extract_text_from_email(msg)
                     if text_body and text_body.strip():
                         results.append({
-                            'email_id': email_id.decode(),
+                            'email_id': message_id,
                             'subject': subject,
                             'from': from_addr,
                             'date': date,

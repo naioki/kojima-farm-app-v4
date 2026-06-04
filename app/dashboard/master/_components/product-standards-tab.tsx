@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, Trash2, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,6 +55,7 @@ import {
 
 import {
   createProductStandard,
+  updateProductStandard,
   deleteProductStandard,
   type Product,
   type ProductStandard,
@@ -89,12 +90,16 @@ interface ProductStandardsTabProps {
 
 function StandardForm({
   products,
+  defaultValues,
   onSubmit,
   isPending,
+  isEdit,
 }: {
   products: Product[];
+  defaultValues?: Partial<FormValues>;
   onSubmit: (data: FormValues) => void;
   isPending: boolean;
+  isEdit?: boolean;
 }) {
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -105,6 +110,7 @@ function StandardForm({
       unit_type: "袋",
       receipt_mode: "total_count",
       is_active: true,
+      ...defaultValues,
     },
   });
 
@@ -117,7 +123,11 @@ function StandardForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel>商品 *</FormLabel>
-              <Select onValueChange={field.onChange} defaultValue={field.value}>
+              <Select
+                onValueChange={field.onChange}
+                value={field.value}
+                disabled={isEdit}
+              >
                 <FormControl>
                   <SelectTrigger>
                     <SelectValue placeholder="商品を選択" />
@@ -178,7 +188,7 @@ function StandardForm({
             render={({ field }) => (
               <FormItem>
                 <FormLabel>単位 *</FormLabel>
-                <Select onValueChange={field.onChange} defaultValue={field.value}>
+                <Select onValueChange={field.onChange} value={field.value}>
                   <FormControl>
                     <SelectTrigger>
                       <SelectValue />
@@ -204,7 +214,7 @@ function StandardForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel>受注入力方式 *</FormLabel>
-              <Select onValueChange={field.onChange} defaultValue={field.value}>
+              <Select onValueChange={field.onChange} value={field.value}>
                 <FormControl>
                   <SelectTrigger>
                     <SelectValue />
@@ -223,7 +233,7 @@ function StandardForm({
         <DialogFooter>
           <Button type="submit" disabled={isPending}>
             {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-            登録
+            {isEdit ? "更新" : "登録"}
           </Button>
         </DialogFooter>
       </form>
@@ -237,7 +247,13 @@ export function ProductStandardsTab({
 }: ProductStandardsTabProps) {
   const [standards, setStandards] = useState(initial);
   const [isPending, startTransition] = useTransition();
+
+  // サーバーサイドからのプロップ更新をステートに同期する
+  useEffect(() => {
+    setStandards(initial);
+  }, [initial]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<ProductStandard | null>(null);
 
   const productMap = Object.fromEntries(products.map((p) => [p.id, p.name]));
 
@@ -254,7 +270,29 @@ export function ProductStandardsTab({
     });
   }
 
-  function handleDelete(id: string, name: string) {
+  function handleUpdate(data: FormValues) {
+    if (!editTarget) return;
+    startTransition(async () => {
+      const result = await updateProductStandard(editTarget.id, {
+        name: data.name,
+        unit_size: data.unit_size,
+        unit_type: data.unit_type,
+        receipt_mode: data.receipt_mode,
+        is_active: data.is_active,
+      });
+      if (result.success) {
+        setStandards((prev) =>
+          prev.map((s) => (s.id === editTarget.id ? result.data : s))
+        );
+        toast.success("規格を更新しました");
+        setEditTarget(null);
+      } else {
+        toast.error("更新に失敗しました", { description: result.error });
+      }
+    });
+  }
+
+  function handleDelete(id: string) {
     startTransition(async () => {
       const result = await deleteProductStandard(id);
       if (result.success) {
@@ -288,6 +326,35 @@ export function ProductStandardsTab({
           </DialogContent>
         </Dialog>
       </div>
+
+      {/* 編集ダイアログ */}
+      <Dialog
+        open={!!editTarget}
+        onOpenChange={(open) => !open && setEditTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>商品規格の編集</DialogTitle>
+          </DialogHeader>
+          {editTarget && (
+            <StandardForm
+              key={editTarget.id}
+              products={products}
+              defaultValues={{
+                product_id: editTarget.product_id,
+                name: editTarget.name,
+                unit_size: editTarget.unit_size,
+                unit_type: editTarget.unit_type as FormValues["unit_type"],
+                receipt_mode: editTarget.receipt_mode as FormValues["receipt_mode"],
+                is_active: editTarget.is_active,
+              }}
+              onSubmit={handleUpdate}
+              isPending={isPending}
+              isEdit
+            />
+          )}
+        </DialogContent>
+      </Dialog>
 
       <div className="rounded-md border">
         <Table>
@@ -330,35 +397,47 @@ export function ProductStandardsTab({
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          <span className="sr-only">削除</span>
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>規格の削除</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            「{std.name}」を削除します。受注または価格マスタに紐づいている場合は削除できません。
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>キャンセル</AlertDialogCancel>
-                          <AlertDialogAction
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                            onClick={() => handleDelete(std.id, std.name)}
+                    <div className="flex items-center justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => setEditTarget(std)}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        <span className="sr-only">編集</span>
+                      </Button>
+
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
                           >
-                            削除
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                            <Trash2 className="h-3.5 w-3.5" />
+                            <span className="sr-only">削除</span>
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>規格の削除</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              「{std.name}」を削除します。受注または価格マスタに紐づいている場合は削除できません。
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+                            <AlertDialogAction
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              onClick={() => handleDelete(std.id)}
+                            >
+                              削除
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))

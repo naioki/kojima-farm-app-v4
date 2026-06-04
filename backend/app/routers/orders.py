@@ -196,12 +196,13 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
 
     ps_map: Dict[str, Dict[str, Any]] = {}
     if ps_ids:
-        p = sb.table("product_standards").select("id, name, unit_size, products(name)").in_("id", ps_ids).execute()
+        p = sb.table("product_standards").select("id, name, unit_size, unit_type, products(name)").in_("id", ps_ids).execute()
         for r in (p.data or []):
             prod = r.get("products")
             ps_map[r["id"]] = {
                 "spec": r.get("name", ""),
                 "unit_size": int(r.get("unit_size") or 0),
+                "unit_type": r.get("unit_type") or "",  # DBの単位を取得
                 "product_name": prod.get("name", "") if isinstance(prod, dict) else "",
             }
 
@@ -213,6 +214,7 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
             "item": ps.get("product_name", ""),
             "spec": ps.get("spec", ""),
             "unit": ps.get("unit_size", 0),
+            "unit_type": ps.get("unit_type", ""),  # DBの単位をそのまま渡す
             "boxes": lr["boxes"],
             "remainder": lr["remainder"],
         })

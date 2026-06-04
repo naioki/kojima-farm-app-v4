@@ -34,17 +34,17 @@ def _get_email_config() -> dict:
     """
     sb = get_supabase()
     try:
-        row = (
+        rows = (
             sb.table("email_config")
             .select("*")
             .eq("tenant_id", _DEFAULT_TENANT_ID)
-            .single()
+            .limit(1)
             .execute()
         )
-        if row.data:
-            return row.data
-    except Exception:
-        pass
+        if rows.data:
+            return rows.data[0]
+    except Exception as e:
+        print(f"[email_config fetch] Supabase error: {e}")
 
     # 環境変数フォールバック
     return {
@@ -55,6 +55,31 @@ def _get_email_config() -> dict:
         "sender_email": os.environ.get("EMAIL_SENDER_FILTER", None),
         "days_back": int(os.environ.get("EMAIL_DAYS_BACK", "1")),
     }
+
+
+def _get_friendly_imap_error(e: Exception) -> str:
+    import socket
+    import ssl
+    import imaplib
+    
+    err_str = str(e)
+    # ホスト名解決失敗（サーバー名の誤りなど）
+    if isinstance(e, socket.gaierror) or "getaddrinfo" in err_str or "gaierror" in err_str:
+        return "IMAPサーバーへの接続に失敗しました。サーバー名（ホスト名）が正しいかご確認ください。"
+    # 接続タイムアウト
+    if isinstance(e, (socket.timeout, TimeoutError)) or "timed out" in err_str.lower():
+        return "メールサーバーへの接続がタイムアウトしました。サーバー名、ポート番号、またはネットワーク接続状況をご確認ください。"
+    # 接続拒否（ポート番号の誤りなど）
+    if isinstance(e, ConnectionRefusedError) or "connection refused" in err_str.lower():
+        return "メールサーバーへの接続が拒否されました。ポート番号（SSLは通常993）が正しいかご確認ください。"
+    # ログインエラー（メールアドレス/パスワードの間違いなど）
+    if isinstance(e, imaplib.IMAP4.error) or "login failed" in err_str.lower() or "authenticationfailed" in err_str.lower():
+        return "メールボックスのログインに失敗しました。メールアドレスまたはパスワードが正しいかご確認ください。"
+    # SSL/TLS エラー
+    if isinstance(e, ssl.SSLError) or "ssl" in err_str.lower():
+        return "SSL/TLS暗号化接続エラーが発生しました。ポート番号（SSLは通常993）が正しいかご確認ください。"
+    
+    return f"メールサーバー接続エラー: {err_str}"
 
 
 @router.get("/fetch", response_model=EmailFetchResponse)
@@ -75,7 +100,7 @@ async def fetch_email_orders():
     if not all([imap_server, email_address, password]):
         raise HTTPException(
             status_code=503,
-            detail="Email configuration incomplete. Set imap_server, email_address, password.",
+            detail="メール設定が不完全です。設定画面でサーバー、アドレス、パスワードを入力してください。",
         )
 
     sender_filter = config.get("sender_email") or None
@@ -92,7 +117,8 @@ async def fetch_email_orders():
             imap_port=imap_port,
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"IMAP fetch failed: {e}")
+        friendly_error = _get_friendly_imap_error(e)
+        raise HTTPException(status_code=502, detail=friendly_error)
 
     sb = get_supabase()
     verification_ids: List[UUID] = []
@@ -169,6 +195,8 @@ async def fetch_email_orders():
                                 "source": "text_email",
                                 "subject": subject,
                                 "email_id": email_id,
+                                "from": str(result.get("from", "")),
+                                "date": email_date.isoformat(),
                                 "raw_text": text_body[:4000] if text_body else "",
                             },
                         }

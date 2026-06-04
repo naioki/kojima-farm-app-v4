@@ -58,11 +58,23 @@ export default function SettingsPage() {
       });
 
       if (res.ok) {
-        toast.success("メール設定を保存しました");
-        setConfig((prev) => ({ ...prev, password: "" }));
+        try {
+          const saved = await res.json();
+          toast.success("メール設定を保存しました");
+          // レスポンスで確定値に更新（パスワードは非返却なのでクリアのみ）
+          setConfig((prev) => ({ ...prev, ...saved, password: "" }));
+        } catch {
+          toast.success("メール設定を保存しました");
+        }
       } else {
-        const err = await res.json();
-        toast.error("保存に失敗しました", { description: err.detail });
+        let errDetail = "サーバーエラーが発生しました";
+        try {
+          const err = await res.json();
+          errDetail = err.detail || errDetail;
+        } catch {
+          errDetail = await res.text().catch(() => res.statusText);
+        }
+        toast.error("保存に失敗しました", { description: errDetail });
       }
     });
   }
@@ -72,11 +84,22 @@ export default function SettingsPage() {
       toast.info("メール接続をテスト中...");
       try {
         const res = await fetch(`${API_URL}/api/email/fetch`, { method: "GET" });
-        const data = await res.json();
         if (res.ok) {
-          toast.success(`接続成功！ ${data.fetched} 件の画像を取得しました`);
+          try {
+            const data = await res.json();
+            toast.success(`接続成功！ ${data.fetched} 件の画像を取得しました`);
+          } catch {
+            toast.success("接続テストに成功しました");
+          }
         } else {
-          toast.error("接続失敗", { description: data.detail });
+          let errDetail = "接続に失敗しました";
+          try {
+            const data = await res.json();
+            errDetail = data.detail || errDetail;
+          } catch {
+            errDetail = await res.text().catch(() => res.statusText);
+          }
+          toast.error("接続失敗", { description: errDetail });
         }
       } catch {
         toast.error("バックエンドに接続できません");

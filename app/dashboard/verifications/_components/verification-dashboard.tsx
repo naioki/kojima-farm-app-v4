@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { VerificationList } from "./verification-list";
 import { ImageViewer } from "./image-viewer";
 import { VerificationForm } from "./verification-form";
-import type { PendingVerification } from "@/app/actions/ocr-actions";
+import type { PendingVerification, MasterData } from "@/app/actions/ocr-actions";
 
 type Filter = "pending" | "all";
 
@@ -12,13 +12,29 @@ const PENDING_STATUSES = ["pending", "needs_review"];
 
 interface VerificationDashboardProps {
   initialVerifications: PendingVerification[];
+  masterData: MasterData;
 }
 
 export function VerificationDashboard({
   initialVerifications,
+  masterData,
 }: VerificationDashboardProps) {
   const [verifications, setVerifications] = useState(initialVerifications);
   const [filter, setFilter] = useState<Filter>("pending");
+
+  // サーバーサイドからのプロップ更新（メール取得など）をステートに同期する
+  useEffect(() => {
+    setVerifications(initialVerifications);
+    setSelectedId((prev) => {
+      const activeList = filter === "pending"
+        ? initialVerifications.filter((v) => PENDING_STATUSES.includes(v.status))
+        : initialVerifications;
+      if (!prev || !initialVerifications.some((v) => v.id === prev)) {
+        return activeList[0]?.id ?? initialVerifications[0]?.id ?? null;
+      }
+      return prev;
+    });
+  }, [initialVerifications, filter]);
 
   const filtered =
     filter === "pending"
@@ -100,12 +116,13 @@ export function VerificationDashboard({
       {selected ? (
         <div className="flex-1 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] overflow-hidden">
           <div className="overflow-y-auto border-r p-4">
-            <ImageViewer verification={selected} />
+            <ImageViewer key={selected.id} verification={selected} />
           </div>
           <div className="overflow-y-auto p-4">
             <VerificationForm
               key={selected.id}
               verification={selected}
+              masterData={masterData}
               onApproved={handleApproved}
             />
           </div>

@@ -1,8 +1,8 @@
 {
   "胡瓜": {
-    "default_unit": 50,
-    "unit_type": "本",
-    "receive_as_boxes": true
+    "default_unit": 30,
+    "unit_type": "袋",
+    "receive_as_boxes": false
   },
   "胡瓜平箱": {
     "default_unit": 30,

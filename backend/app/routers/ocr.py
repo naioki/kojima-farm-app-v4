@@ -207,19 +207,27 @@ async def parse_verification(req: ParseRequest):
     tenant_id_for_parse = verif["tenant_id"]
     _prod_rows = sb.table("products").select("id, name").eq("tenant_id", tenant_id_for_parse).execute()
     _prod_by_name: Dict[str, str] = {r["name"].strip(): r["id"] for r in (_prod_rows.data or [])}
-    _ps_rows = sb.table("product_standards").select("id, name, product_id").eq("tenant_id", tenant_id_for_parse).eq("is_active", True).execute()
+    _ps_rows = sb.table("product_standards").select("id, name, product_id, unit_size, receipt_mode").eq("tenant_id", tenant_id_for_parse).eq("is_active", True).execute()
     _ps_by_product: Dict[str, List[str]] = {}
+    _unit_by_ps: Dict[str, int] = {}           # (product_id, spec_name) -> unit_size
+    _receipt_mode_by_ps: Dict[str, str] = {}   # (product_id, spec_name) -> receipt_mode
     for r in (_ps_rows.data or []):
         _ps_by_product.setdefault(r["product_id"], []).append(r["name"].strip())
+        _unit_by_ps[(r["product_id"], r["name"].strip())] = r.get("unit_size") or 0
+        _receipt_mode_by_ps[(r["product_id"], r["name"].strip())] = r.get("receipt_mode") or "総数入力"
 
-    def _resolve_spec(item: str, spec: str) -> str:
-        """スペックが空またはマスター不一致のとき、候補1件なら自動補完"""
+    def _resolve_prod_id(item: str) -> str | None:
+        """商品名から product_id を解決（完全一致→部分一致）"""
         prod_id = _prod_by_name.get(item.strip())
         if not prod_id:
-            # 部分一致で商品名を解決
             candidates = [n for n in _prod_by_name if item.strip() in n or n in item.strip()]
             if len(candidates) == 1:
                 prod_id = _prod_by_name[candidates[0]]
+        return prod_id
+
+    def _resolve_spec(item: str, spec: str) -> str:
+        """スペックが空またはマスター不一致のとき、候補1件なら自動補完"""
+        prod_id = _resolve_prod_id(item)
         if not prod_id:
             return spec
         available = _ps_by_product.get(prod_id, [])
@@ -229,20 +237,95 @@ async def parse_verification(req: ParseRequest):
             return available[0] if len(available) == 1 else spec
         if spec.strip() in available:
             return spec.strip()
-        # 部分一致
         matched = [s for s in available if spec.strip() in s or s in spec.strip()]
         return matched[0] if len(matched) == 1 else spec
 
-    # parsed_lines に confidence を付与 + スペック自動補完
+    def _resolve_unit(item: str, spec: str) -> int:
+        """マスターデータの unit_size を取得（0なら未登録）"""
+        prod_id = _resolve_prod_id(item)
+        if not prod_id:
+            return 0
+        return _unit_by_ps.get((prod_id, spec.strip()), 0)
+
+    def _resolve_receipt_mode(item: str, spec: str) -> str:
+        """マスターデータの receipt_mode を取得（総数入力 / 箱数入力）"""
+        prod_id = _resolve_prod_id(item)
+        if not prod_id:
+            return "総数入力"
+        return _receipt_mode_by_ps.get((prod_id, spec.strip()), "総数入力")
+
+    def _total_to_boxes_remainder(total: int, unit: int):
+        """v3 box_remainder_calc.total_to_boxes_remainder と同一ロジック"""
+        total = max(0, int(total))
+        unit = int(unit)
+        if unit <= 0:
+            return (0, total)
+        return (total // unit, total % unit)
+
+    def _calculate_inventory(input_num: int, master_unit: int, receive_as_boxes: bool):
+        """v3 box_remainder_calc.calculate_inventory と同一ロジック"""
+        input_num = max(0, int(input_num))
+        master_unit = max(0, int(master_unit))
+        if receive_as_boxes:
+            boxes = input_num
+            total = boxes * master_unit if master_unit > 0 else 0
+            return (total, boxes, 0, master_unit)
+        total = input_num
+        if master_unit <= 0:
+            return (total, 0, total, 0)
+        boxes, rem = _total_to_boxes_remainder(total, master_unit)
+        return (total, boxes, rem, master_unit)
+
+    # parsed_lines に confidence を付与 + スペック・unit/boxes をマスターデータで再計算（v3ロジック）
     parsed_lines_with_conf = []
     for entry in validated:
-        resolved_spec = _resolve_spec(entry.get("item", ""), entry.get("spec", ""))
+        item_name = entry.get("item", "")
+        resolved_spec = _resolve_spec(item_name, entry.get("spec", ""))
+        db_unit = _resolve_unit(item_name, resolved_spec)
+        receipt_mode = _resolve_receipt_mode(item_name, resolved_spec)
+        receive_as_boxes = receipt_mode in ("箱数入力", "box_count")
+
+        # Gemini は input_num に「×」の直後の数字をそのまま返す
+        input_num = entry.get("input_num") or entry.get("boxes", 0)
+        input_num = max(0, int(input_num)) if input_num else 0
+
+        if db_unit > 0:
+            _, boxes, remainder, unit = _calculate_inventory(input_num, db_unit, receive_as_boxes)
+
+            # ── 補正パス1: AIが total=boxes×unit で返した場合の修正 (v3 _fix_total_when_ai_sent_boxes_times_unit) ──
+            # 総数モードで input_num > 1000 かつ input_num == some_boxes * db_unit の場合、
+            # input_num が正しい総数のため補正不要。ただし Gemini が既に掛け算した可能性をチェック。
+            if not receive_as_boxes and input_num > 1000 and db_unit > 0:
+                if input_num % db_unit == 0:
+                    candidate_boxes = input_num // db_unit
+                    if 10 <= candidate_boxes <= 1000:
+                        # input_num が実は "boxes" で渡された可能性。
+                        # ただし v3 の条件: total == unit * boxes かつ boxes が 10-1000 のとき。
+                        # ここでは input_num そのものが正しいかどうか判断できないので
+                        # ログのみ出してそのまま使う（UI で人間が確認する）
+                        print(f"[parse WARNING] {item_name} {resolved_spec}: input_num={input_num} が db_unit={db_unit} の倍数。AIが掛け算した可能性あり。boxes候補={candidate_boxes}")
+
+        else:
+            # マスター未登録: Gemini の値をそのまま使用
+            unit = entry.get("unit", 0)
+            boxes = input_num
+            remainder = entry.get("remainder", 0)
+
+        print(f"[parse] {entry.get('store','')} {item_name} {resolved_spec}: input_num={input_num} unit={db_unit} receipt={receipt_mode} → boxes={boxes} rem={remainder}")
+
         conf = 1.0
         for w in warnings:
-            if entry.get("store", "") in w or entry.get("item", "") in w:
+            if item_name in w or entry.get("store", "") in w:
                 conf = 0.5
                 break
-        parsed_lines_with_conf.append({**entry, "spec": resolved_spec, "confidence": conf})
+        parsed_lines_with_conf.append({
+            **entry,
+            "spec": resolved_spec,
+            "unit": unit,
+            "boxes": boxes,
+            "remainder": remainder,
+            "confidence": conf,
+        })
 
     # DB 更新
     sb.table("ocr_verifications").update(

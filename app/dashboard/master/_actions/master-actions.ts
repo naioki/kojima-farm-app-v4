@@ -377,6 +377,37 @@ export async function createProductStandard(
   }
 }
 
+export async function updateProductStandard(
+  id: string,
+  input: Partial<ProductStandardInput>
+): Promise<ActionResult<ProductStandard>> {
+  try {
+    const ctx = await getAdminClient();
+    if ("error" in ctx) return { success: false, error: ctx.error };
+    const { supabase, profile } = ctx;
+
+    const { data, error } = await supabase
+      .from("product_standards")
+      .update(input)
+      .eq("id", id)
+      .eq("tenant_id", profile.tenant_id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[updateProductStandard] DBエラー:", error);
+      if (error.code === "23505")
+        return { success: false, error: "同じ規格名がすでに登録されています。" };
+      return { success: false, error: "規格の更新に失敗しました。" };
+    }
+
+    revalidatePath("/dashboard/master");
+    return { success: true, data };
+  } catch {
+    return { success: false, error: "予期しないエラーが発生しました。" };
+  }
+}
+
 export async function deleteProductStandard(id: string): Promise<ActionResult> {
   try {
     const ctx = await getAdminClient();

@@ -288,3 +288,76 @@ export async function approveOcrVerification(
     }
   }
 }
+
+// ─── マスターデータ取得 ────────────────────────────────────────────────
+export type MasterData = {
+  stores: string[]
+  products: { id: string; name: string }[]
+  specs: { productId: string; name: string; unitSize: number }[]
+}
+
+export async function fetchMasterData(): Promise<ActionResult<MasterData>> {
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: 'ログインが必要です' }
+
+    const { data: profile } = await supabase.from('profiles').select('tenant_id').eq('id', user.id).single()
+    if (!profile) return { success: false, error: 'プロファイルが見つかりません' }
+
+    const tenantId = profile.tenant_id
+
+    // 店舗（customers）
+    const { data: customers } = await supabase
+      .from('customers')
+      .select('name')
+      .eq('tenant_id', tenantId)
+      .eq('is_active', true)
+      .order('name')
+    const stores = (customers ?? []).map((c) => c.name as string)
+
+    // 品目（products）
+    const { data: products } = await supabase
+      .from('products')
+      .select('id, name')
+      .eq('tenant_id', tenantId)
+      .eq('is_active', true)
+      .order('name')
+
+    // 規格（product_standards）
+    const { data: standards } = await supabase
+      .from('product_standards')
+      .select('product_id, name, unit_size')
+      .eq('tenant_id', tenantId)
+      .eq('is_active', true)
+
+    // 同名品目が複数あると Select が重複表示されるため名前ベースで重複排除
+    const nameToFirstId = new Map<string, string>()
+    const uniqueProducts: { id: string; name: string }[] = []
+    for (const p of (products ?? [])) {
+      const name = p.name as string
+      if (!nameToFirstId.has(name)) {
+        nameToFirstId.set(name, p.id)
+        uniqueProducts.push({ id: p.id, name })
+      }
+    }
+
+    // 規格: 重複品目の product_id を代表 ID に統一して全規格を収集
+    const productIdToName = new Map<string, string>()
+    for (const p of (products ?? [])) productIdToName.set(p.id, p.name as string)
+
+    const specs = (standards ?? []).map((s) => {
+      const productName = productIdToName.get(s.product_id) ?? ''
+      const canonicalId = nameToFirstId.get(productName) ?? s.product_id
+      return { productId: canonicalId, name: s.name as string, unitSize: (s.unit_size as number) ?? 0 }
+    })
+
+    return {
+      success: true,
+      data: { stores, products: uniqueProducts, specs },
+    }
+  } catch (err) {
+    console.error('[fetchMasterData] エラー:', err)
+    return { success: false, error: 'マスターデータの取得に失敗しました' }
+  }
+}

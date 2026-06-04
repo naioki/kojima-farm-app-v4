@@ -1,10 +1,13 @@
-import { getAllVerifications } from "@/app/actions/ocr-actions";
+import { getAllVerifications, fetchMasterData } from "@/app/actions/ocr-actions";
 import { VerificationDashboard } from "./_components/verification-dashboard";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 
 export default async function VerificationsPage() {
-  const result = await getAllVerifications();
+  const [result, masterResult] = await Promise.all([
+    getAllVerifications(),
+    fetchMasterData(),
+  ]);
 
   if (!result.success) {
     return (
@@ -18,5 +21,7 @@ export default async function VerificationsPage() {
     );
   }
 
-  return <VerificationDashboard initialVerifications={result.data} />;
+  const masterData = masterResult.success ? masterResult.data : { stores: [], products: [], specs: [] };
+
+  return <VerificationDashboard initialVerifications={result.data} masterData={masterData} />;
 }

@@ -1,9 +1,9 @@
 "use client";
 
-import { useForm, useFieldArray, useWatch } from "react-hook-form";
+import { useForm, useFieldArray, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { useState, useTransition, useEffect } from "react";
+import { useState, useTransition, useEffect, useCallback } from "react";
 import {
   Plus, Trash2, CheckCircle, Loader2, Sparkles, Download, AlertTriangle, ArrowUpDown,
 } from "lucide-react";
@@ -18,16 +18,21 @@ import {
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 
 import { HumanFormSchema, type HumanForm, type HumanLine } from "@/lib/schemas/ocr";
 import {
-  parseOcrVerification, approveWithFastApi, type PendingVerification,
+  parseOcrVerification, approveWithFastApi,
+  type PendingVerification, type MasterData,
 } from "@/app/actions/ocr-actions";
 import { fetchPdfBlob } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 interface VerificationFormProps {
   verification: PendingVerification;
+  masterData: MasterData;
   onApproved?: () => void;
 }
 
@@ -44,6 +49,65 @@ function RowTotal({ control, idx }: { control: any; idx: number }) {
   );
 }
 
+// 品目別規格選択コンポーネント（イベント駆動型で状態連動）
+function SpecSelector({
+  control, idx, masterData, setValue,
+}: {
+  control: any;
+  idx: number;
+  masterData: MasterData;
+  setValue: any;
+}) {
+  const itemName = useWatch({ control, name: `lines.${idx}.item` });
+  const specVal  = useWatch({ control, name: `lines.${idx}.spec` });
+
+  const product = masterData.products.find((p) => p.name === itemName);
+  const availableSpecs = product
+    ? masterData.specs.filter((s) => s.productId === product.id)
+    : [];
+
+  if (availableSpecs.length === 0) {
+    return (
+      <Input
+        className="h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2"
+        placeholder="—"
+        value={specVal ?? ""}
+        onChange={(e) => setValue(`lines.${idx}.spec`, e.target.value)}
+      />
+    );
+  }
+
+  return (
+    <Controller
+      control={control}
+      name={`lines.${idx}.spec`}
+      render={({ field }) => (
+        <Select
+          value={field.value ?? ""}
+          onValueChange={(v) => {
+            field.onChange(v);
+            const spec = availableSpecs.find((s) => s.name === v);
+            if (spec && spec.unitSize > 0) {
+              setValue(`lines.${idx}.unit`, spec.unitSize);
+            }
+          }}
+        >
+          <SelectTrigger className="h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2 w-full">
+            <SelectValue placeholder="規格" />
+          </SelectTrigger>
+          <SelectContent>
+            {availableSpecs.map((s) => (
+              <SelectItem key={s.name} value={s.name} className="text-xs">
+                {s.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    />
+  );
+}
+
 function buildDefaultLine(line: PendingVerification["parsed_lines"][0]): HumanLine {
   return {
     store:     line.store     ?? "",
@@ -56,14 +120,13 @@ function buildDefaultLine(line: PendingVerification["parsed_lines"][0]): HumanLi
 }
 
 const READONLY_STATUSES = ["corrected", "auto_accepted", "rejected"];
-
 const STATUS_LABELS: Record<string, string> = {
   corrected:     "承認済み",
   auto_accepted: "自動承認済み",
   rejected:      "却下済み",
 };
 
-export function VerificationForm({ verification, onApproved }: VerificationFormProps) {
+export function VerificationForm({ verification, masterData, onApproved }: VerificationFormProps) {
   const isReadOnly = READONLY_STATUSES.includes(verification.status);
   const [isPending,  startTransition] = useTransition();
   const [isParsing,  startParsing]    = useTransition();
@@ -83,12 +146,12 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
     });
   }
 
-  const today = new Date().toISOString().split("T")[0];
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().split("T")[0];
 
   const form = useForm<HumanForm>({
     resolver: zodResolver(HumanFormSchema),
     defaultValues: {
-      order_date: today,
+      order_date: tomorrow,
       lines: verification.parsed_lines.length > 0
         ? verification.parsed_lines.map(buildDefaultLine)
         : [{ store: "", item: "", spec: "", unit: 0, boxes: 0, remainder: 0 }],
@@ -101,7 +164,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
     name: "lines",
   });
 
-  // ── エラートースト ────────────────────────────────────────────────
+  // ── エラートースト ─────────────────────────────────────────────────
   function toastError(title: string, detail: string) {
     toast.error(title, {
       description: detail,
@@ -113,7 +176,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
     });
   }
 
-  // ── Gemini 解析 ────────────────────────────────────────────────────
+  // ── Gemini 解析 ───────────────────────────────────────────────────
   function handleParse() {
     startParsing(async () => {
       const result = await parseOcrVerification(verification.id);
@@ -134,7 +197,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
     });
   }
 
-  // ── 承認 ──────────────────────────────────────────────────────────
+  // ── 承認 ─────────────────────────────────────────────────────────
   function handleApprove(data: HumanForm) {
     startTransition(async () => {
       const result = await approveWithFastApi(
@@ -156,7 +219,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
     });
   }
 
-  // ── PDF ダウンロード ──────────────────────────────────────────────
+  // ── PDF ダウンロード ─────────────────────────────────────────────
   async function handlePdfDownload(orderId?: string, orderDate?: string) {
     const id = orderId ?? approvedOrderId;
     if (!id) return;
@@ -178,7 +241,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
     }
   }
 
-  // ── 読み取り専用 ───────────────────────────────────────────────────
+  // ── 読み取り専用 ──────────────────────────────────────────────────
   if (isReadOnly) {
     return (
       <Card className="h-full flex flex-col overflow-hidden">
@@ -216,7 +279,10 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
                     <td className="px-3 py-2 text-right font-mono">{line.boxes}</td>
                     <td className="px-3 py-2 text-right font-mono">{line.remainder}</td>
                     <td className="px-3 py-2 text-right font-mono font-semibold text-foreground">
-                      {line.total_qty}
+                      {(() => {
+                        const t = (line.unit ?? 0) * (line.boxes ?? 0) + (line.remainder ?? 0);
+                        return t > 0 ? t : "—";
+                      })()}
                     </td>
                   </tr>
                 ))}
@@ -228,7 +294,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
     );
   }
 
-  // ── 承認完了 ───────────────────────────────────────────────────────
+  // ── 承認完了 ──────────────────────────────────────────────────────
   if (approvedOrderId) {
     return (
       <Card className="h-full flex flex-col items-center justify-center gap-5 p-8">
@@ -330,9 +396,9 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
               <thead className="bg-muted/80 sticky top-0 z-10">
                 <tr>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-8">#</th>
-                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[80px]">店舗</th>
-                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[80px]">品目</th>
-                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[60px]">規格</th>
+                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[90px]">店舗</th>
+                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[90px]">品目</th>
+                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[70px]">規格</th>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">入数</th>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">箱</th>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">バラ</th>
@@ -342,7 +408,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
               </thead>
               <tbody>
                 {fields.map((field, idx) => {
-                  const conf     = (verification.parsed_lines[idx] as any)?.confidence;
+                  const conf      = (verification.parsed_lines[idx] as any)?.confidence;
                   const isLowConf = conf !== undefined && conf < 0.9;
                   const storeErr  = form.formState.errors.lines?.[idx]?.store;
                   const itemErr   = form.formState.errors.lines?.[idx]?.item;
@@ -355,7 +421,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
                         isLowConf && "bg-amber-50/70"
                       )}
                     >
-                      {/* 行番号 / 要確認マーク */}
+                      {/* 行番号 */}
                       <td className="px-2 py-1 text-center text-muted-foreground">
                         {isLowConf
                           ? <span title="要確認"><AlertTriangle className="h-3.5 w-3.5 text-amber-500 mx-auto" /></span>
@@ -363,36 +429,77 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
                         }
                       </td>
 
-                      {/* 店舗 */}
+                      {/* 店舗 ▼ ドロップダウン */}
                       <td className="px-1 py-0.5">
-                        <Input
-                          className={cn(
-                            "h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2",
-                            storeErr && "border-destructive"
+                        <Controller
+                          control={form.control}
+                          name={`lines.${idx}.store`}
+                          render={({ field: f }) => (
+                            <Select value={f.value ?? ""} onValueChange={f.onChange}>
+                              <SelectTrigger className={cn(
+                                "h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2 w-full",
+                                storeErr && "border-destructive"
+                              )}>
+                                <SelectValue placeholder="店舗" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {masterData.stores.map((s) => (
+                                  <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           )}
-                          placeholder="店舗名"
-                          {...form.register(`lines.${idx}.store`)}
                         />
                       </td>
 
-                      {/* 品目 */}
+                      {/* 品目 ▼ ドロップダウン */}
                       <td className="px-1 py-0.5">
-                        <Input
-                          className={cn(
-                            "h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2",
-                            itemErr && "border-destructive"
+                        <Controller
+                          control={form.control}
+                          name={`lines.${idx}.item`}
+                          render={({ field: f }) => (
+                            <Select
+                              value={f.value ?? ""}
+                              onValueChange={(val) => {
+                                f.onChange(val);
+                                // 品目変更時に規格と入数を自動更新
+                                const prod = masterData.products.find((p) => p.name === val);
+                                const availableSpecs = prod
+                                  ? masterData.specs.filter((s) => s.productId === prod.id)
+                                  : [];
+                                const firstSpec = availableSpecs[0];
+                                if (firstSpec) {
+                                  form.setValue(`lines.${idx}.spec`, firstSpec.name);
+                                  form.setValue(`lines.${idx}.unit`, firstSpec.unitSize);
+                                } else {
+                                  form.setValue(`lines.${idx}.spec`, "");
+                                  form.setValue(`lines.${idx}.unit`, 0);
+                                }
+                              }}
+                            >
+                              <SelectTrigger className={cn(
+                                "h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2 w-full",
+                                itemErr && "border-destructive"
+                              )}>
+                                <SelectValue placeholder="品目" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {masterData.products.map((p) => (
+                                  <SelectItem key={p.id} value={p.name} className="text-xs">{p.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           )}
-                          placeholder="品目名"
-                          {...form.register(`lines.${idx}.item`)}
                         />
                       </td>
 
-                      {/* 規格 */}
+                      {/* 規格 ▼ 品目連動ドロップダウン */}
                       <td className="px-1 py-0.5">
-                        <Input
-                          className="h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2"
-                          placeholder="—"
-                          {...form.register(`lines.${idx}.spec`)}
+                        <SpecSelector
+                          control={form.control}
+                          idx={idx}
+                          masterData={masterData}
+                          setValue={form.setValue}
                         />
                       </td>
 
@@ -423,12 +530,12 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
                         />
                       </td>
 
-                      {/* 合計（リアルタイム計算） */}
+                      {/* 合計 */}
                       <td className="px-2 py-1 text-center">
                         <RowTotal control={form.control} idx={idx} />
                       </td>
 
-                      {/* 削除ボタン */}
+                      {/* 削除 */}
                       <td className="px-1 py-0.5 text-center">
                         {fields.length > 1 && (
                           <button
@@ -468,7 +575,7 @@ export function VerificationForm({ verification, onApproved }: VerificationFormP
           </div>
         </CardContent>
 
-        {/* フッター: 承認ボタン */}
+        {/* フッター */}
         <CardFooter className="border-t px-4 py-3 shrink-0">
           <Button
             type="submit"

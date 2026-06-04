@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -86,6 +86,25 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
   const [isDeleting, startDelete] = useTransition();
   const router = useRouter();
 
+  // 詳細ダイアログ用の合計計算
+  const totalBoxes = selectedOrder
+    ? selectedOrder.lines.reduce((sum, l) => sum + (l.boxes || 0), 0)
+    : 0;
+  const totalRemainder = selectedOrder
+    ? selectedOrder.lines.reduce((sum, l) => sum + (l.remainder || 0), 0)
+    : 0;
+  const totalQty = selectedOrder
+    ? selectedOrder.lines.reduce((sum, l) => sum + (l.total_qty || 0), 0)
+    : 0;
+  const totalAmount = selectedOrder
+    ? selectedOrder.lines.reduce((sum, l) => sum + (l.line_total || 0), 0)
+    : 0;
+
+  // サーバーサイドからのプロップ更新（リスト更新など）をステートに同期する
+  useEffect(() => {
+    setOrders(initialOrders);
+  }, [initialOrders]);
+
   async function handleRowClick(orderId: string) {
     setLoadingId(orderId);
     const result = await getOrderDetail(orderId);
@@ -98,12 +117,13 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
     }
   }
 
-  const [reverseStoreOrder, setReverseStoreOrder] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("reverseStoreOrder") === "true";
-    }
-    return false;
-  });
+  // SSRとクライアントの初期値を一致させるため false で初期化し、
+  // hydration 後に localStorage から実際の値を読み込む
+  const [reverseStoreOrder, setReverseStoreOrder] = useState(false);
+
+  useEffect(() => {
+    setReverseStoreOrder(localStorage.getItem("reverseStoreOrder") === "true");
+  }, []);
 
   function toggleReverseStoreOrder() {
     setReverseStoreOrder((prev) => {
@@ -341,6 +361,16 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
                       </TableCell>
                     </TableRow>
                   ))}
+                  {/* 合計行 */}
+                  <TableRow className="bg-muted/50 font-semibold border-t-2 border-muted-foreground/20">
+                    <TableCell colSpan={3} className="text-left font-medium">合計</TableCell>
+                    <TableCell className="text-right font-mono">{totalBoxes || "—"}</TableCell>
+                    <TableCell className="text-right font-mono">{totalRemainder || "—"}</TableCell>
+                    <TableCell className="text-right font-mono">{totalQty}</TableCell>
+                    <TableCell className="text-right font-mono text-foreground font-semibold">
+                      {totalAmount > 0 ? `¥${totalAmount.toLocaleString()}` : "—"}
+                    </TableCell>
+                  </TableRow>
                 </TableBody>
               </Table>
 

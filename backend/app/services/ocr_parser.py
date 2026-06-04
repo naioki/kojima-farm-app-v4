@@ -70,8 +70,10 @@ def get_unit_label_for_item(item: str, spec: str) -> str:
 
 # ─── Gemini クライアント・モデル選択（起動後1回だけ解決してキャッシュ） ───────
 
-# 試行する優先モデルリスト（gemini-2.5-flash 優先）
+# 試行する優先モデルリスト（gemini-3.1-flash-lite 優先）
 _CANDIDATE_MODELS = [
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
@@ -127,14 +129,14 @@ def parse_order_image(image: Image.Image, api_key: str) -> Optional[List[Dict]]:
     store_list = "、".join(known_stores)
     unit_lines = "\n".join(
         [
-            f"- {name}: {s.get('default_unit', 0)}{s.get('unit_type', '袋')}/コンテナ"
+            f"- {name}: 1コンテナ={s.get('default_unit', 0)}{s.get('unit_type', '袋')}、受信方法={'【箱数】×数字をそのままboxesに' if s.get('receive_as_boxes') else '【総数】×数字÷unit=boxes, 余り=remainder'}"
             for name, s in sorted(item_settings_for_prompt.items())
             if s.get("default_unit", 0) > 0
         ]
     )
     box_count_str = "、".join(box_count_items) if box_count_items else "（なし）"
 
-    # ── プロンプト（v3 完全互換） ──────────────────────────────────────────
+    # ── プロンプト（v3ロジックに合わせ input_num で受け取る） ────────────────
     prompt = f"""
 画像を解析し、以下の厳密なルールに従ってJSONで返してください。
 
@@ -149,20 +151,21 @@ def parse_order_image(image: Image.Image, api_key: str) -> Optional[List[Dict]]:
 1. 店舗名の後に「:」または改行がある場合、その後の行は全てその店舗の注文です
 2. 品目名がない行（例：「50×1」）は、直前の品目の続きとして処理してください
 3. 「/」で区切られた複数の注文は、同じ店舗・同じ品目として統合してください
-   - 例：「胡瓜バラ100×7 / 50×1」→ 胡瓜バラ100本×7箱 + 端数50本
-4. 「胡瓜バラ」と「胡瓜3本」は別の規格として扱ってください
-5. unit, boxes, remainderには「数字のみ」を入れてください
+4. 「胡瓜バラ」「ネギバラ」と「胡瓜3本」「ネギ2本」は**別の品目**として扱ってください
+5. 「ネギバラ」は item="長ねぎバラ"、spec="" で出力してください（長ネギ2本と混同しない）
+6. 「胡瓜バラ50本」は item="胡瓜"、spec="50本" で出力してください
 
-【計算ルール（事前登録マスターデータ＝1コンテナあたりの入数）】
-メールで送られてくるのは基本的に「総数」です。以下の登録入数を参照して、総数から箱数・端数を逆算してください。
-{unit_lines}
-
-【最重要：総数 vs 箱数】
-- 「×数字」が総数の品目：boxes = 総数÷unit（切り捨て）, remainder = 総数 - unit×boxes で逆算してください。
-- 「×数字」が箱数の品目（以下のみ）：{box_count_str} → ×数字をそのままboxesにし、unitは上記の値、remainder=0 で出力してください。
+【最重要：input_num には注文書の「×」の直後の数字をそのまま入れてください】
+- 箱数への変換・割り算は不要です。システムが自動計算します。
+- unit=0、boxes=0、remainder=0 で出力してください。
+- 例：「胡瓜3本×400」→ {{"item":"胡瓜","spec":"3本","input_num":400,"unit":0,"boxes":0,"remainder":0}}
+- 例：「ネギ2本×60」→ {{"item":"長ネギ","spec":"2本","input_num":60,"unit":0,"boxes":0,"remainder":0}}
+- 例：「ネギバラ×250」→ {{"item":"長ねぎバラ","spec":"","input_num":250,"unit":0,"boxes":0,"remainder":0}}
+- 例：「胡瓜バラ50本×20」→ {{"item":"胡瓜","spec":"50本","input_num":20,"unit":0,"boxes":0,"remainder":0}}
+- 例：「春菊×30」→ {{"item":"春菊","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}}
 
 【出力JSON形式】
-[{{"store":"店舗名","item":"品目名","spec":"規格","unit":数字,"boxes":数字,"remainder":数字}}]
+[{{"store":"店舗名","item":"品目名","spec":"規格","input_num":数字,"unit":0,"boxes":0,"remainder":0}}]
 
 必ず全ての店舗と品目を漏れなく読み取ってください。
 """
@@ -210,7 +213,7 @@ def parse_order_text(text_body: str, api_key: str) -> Optional[List[Dict]]:
     store_list = "、".join(known_stores)
     unit_lines = "\n".join(
         [
-            f"- {name}: {s.get('default_unit', 0)}{s.get('unit_type', '袋')}/コンテナ"
+            f"- {name}: 1コンテナ={s.get('default_unit', 0)}{s.get('unit_type', '袋')}、受信方法={'【箱数】×数字をそのままboxesに' if s.get('receive_as_boxes') else '【総数】×数字÷unit=boxes, 余り=remainder'}"
             for name, s in sorted(item_settings_for_prompt.items())
             if s.get("default_unit", 0) > 0
         ]
@@ -229,19 +232,22 @@ def parse_order_text(text_body: str, api_key: str) -> Optional[List[Dict]]:
 
 【重要ルール】
 1. 店舗名の後に「:」または改行がある場合、その後の行は全てその店舗の注文です
-2. 「×数字」は通常「数量×箱数」または「1コンテナあたりの入数×箱数」を示します
-3. 「/」で区切られた複数の注文は、同じ店舗・同じ品目として統合してください
-4. unit, boxes, remainderには「数字のみ」を入れてください
+2. 「/」で区切られた複数の注文は、同じ店舗・同じ品目として統合してください
+3. 「胡瓜バラ」「ネギバラ」と「胡瓜3本」「ネギ2本」は**別の品目**として扱ってください
+4. 「ネギバラ」は item="長ねぎバラ"、spec="" で出力してください（長ネギ2本と混同しない）
+5. 「胡瓜バラ50本」は item="胡瓜"、spec="50本" で出力してください
 
-【計算ルール】
-メールで送られてくる「×数字」は以下のいずれかです：
-- 総数の場合: boxes = 総数÷unit（切り捨て）, remainder = 総数 - unit×boxes
-- 箱数の場合（{box_count_str}）: ×数字をboxesに, remainder=0
-
-{unit_lines}
+【最重要：input_num には注文書の「×」の直後の数字をそのまま入れてください】
+- 箱数への変換・割り算は不要です。システムが自動計算します。
+- unit=0、boxes=0、remainder=0 で出力してください。
+- 例：「胡瓜3本×400」→ {{"item":"胡瓜","spec":"3本","input_num":400,"unit":0,"boxes":0,"remainder":0}}
+- 例：「ネギ2本×60」→ {{"item":"長ネギ","spec":"2本","input_num":60,"unit":0,"boxes":0,"remainder":0}}
+- 例：「ネギバラ×250」→ {{"item":"長ねぎバラ","spec":"","input_num":250,"unit":0,"boxes":0,"remainder":0}}
+- 例：「胡瓜バラ50本×20」→ {{"item":"胡瓜","spec":"50本","input_num":20,"unit":0,"boxes":0,"remainder":0}}
+- 例：「春菊×30」→ {{"item":"春菊","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}}
 
 【出力JSON形式】
-[{{"store":"店舗名","item":"品目名","spec":"規格","unit":数字,"boxes":数字,"remainder":数字}}]
+[{{"store":"店舗名","item":"品目名","spec":"規格","input_num":数字,"unit":0,"boxes":0,"remainder":0}}]
 
 必ず全ての店舗と品目を漏れなく読み取ってください。
 
@@ -314,10 +320,21 @@ def validate_and_fix_order_data(
         # ── 品目名 ─────────────────────────────────────────────────────
         item_normalization = load_items()
         normalized_item: Optional[str] = None
+        # Pass1: 完全一致優先（"ネギバラ" が "長ネギ"の"ねぎ"に誤マッチするのを防ぐ）
         for normalized, variants in item_normalization.items():
-            if item in variants or any(v in item for v in variants):
+            if item in variants:
                 normalized_item = normalized
                 break
+        # Pass2: 部分一致（最長マッチを優先して誤マッチを抑制）
+        if not normalized_item:
+            best_match: Optional[str] = None
+            best_len = 0
+            for normalized, variants in item_normalization.items():
+                for v in variants:
+                    if v in item and len(v) > best_len:
+                        best_match = normalized
+                        best_len = len(v)
+            normalized_item = best_match
         if not normalized_item and item:
             if auto_learn:
                 normalized_item = auto_learn_item(item)
@@ -327,43 +344,36 @@ def validate_and_fix_order_data(
                 warnings.append(f"行{i+1}: 品目名「{item}」を正規化できませんでした")
 
         # ── 数量 ────────────────────────────────────────────────────────
+        # input_num がある場合（新プロンプト形式）は unit/boxes を上書きしない。
+        # ocr.py の parse_verification が DB の unit_size を使って計算する。
+        input_num_val = safe_int(entry.get("input_num", 0))
         unit = safe_int(entry.get("unit", 0))
         boxes = safe_int(entry.get("boxes", 0))
         remainder = safe_int(entry.get("remainder", 0))
 
-        if unit <= 0:
-            spec_for_lookup = (entry.get("spec") or "").strip()
-            looked_up = lookup_unit(
-                normalized_item or item, spec_for_lookup, validated_store or store
-            )
-            if looked_up > 0:
-                unit = looked_up
-            else:
-                setting = get_item_setting(normalized_item or item)
-                default_unit = setting.get("default_unit", 0)
-                if default_unit > 0:
-                    unit = default_unit
-
-        if unit == 0 and boxes == 0 and remainder == 0:
+        if unit == 0 and boxes == 0 and remainder == 0 and input_num_val == 0:
             warnings.append(f"行{i+1}: 数量が全て0 (店舗: {store}, 品目: {item})")
 
         spec_value = str((entry.get("spec") or "")).strip()
 
-        if unit > 0:
+        # input_num がない旧形式のときのみ config_manager に unit を保存
+        if unit > 0 and input_num_val == 0:
             add_unit_if_new(
                 normalized_item or item, spec_value, validated_store or store, unit
             )
 
-        validated_data.append(
-            {
-                "store": validated_store or store,
-                "item": normalized_item or item,
-                "spec": spec_value,
-                "unit": unit,
-                "boxes": boxes,
-                "remainder": remainder,
-            }
-        )
+        row: Dict[str, Any] = {
+            "store": validated_store or store,
+            "item": normalized_item or item,
+            "spec": spec_value,
+            "unit": unit,
+            "boxes": boxes,
+            "remainder": remainder,
+        }
+        # input_num を保持（ocr.py の v3 計算ロジックで使用）
+        if "input_num" in entry:
+            row["input_num"] = safe_int(entry["input_num"])
+        validated_data.append(row)
 
     return validated_data, learned_stores, warnings
 
@@ -454,7 +464,9 @@ def generate_summary_table(order_data: List[Dict]) -> List[Dict]:
         rem_box = 1 if remainder > 0 else 0
         total_packs = boxes + rem_box
         total_quantity = (unit * boxes) + remainder
-        unit_label = get_unit_label_for_item(item, spec)
+        # DBの unit_type を優先。なければ item_settings.json のロジックで補完
+        db_unit_type = entry.get("unit_type", "")
+        unit_label = db_unit_type if db_unit_type else get_unit_label_for_item(item, spec)
         item_display = f"{item} {spec}".strip() if spec else item
 
         summary.append(

@@ -162,17 +162,18 @@ class EmailConfigIn(EmailConfigOut):
 async def get_email_config():
     sb = get_supabase()
     try:
-        row = (
+        # .single() は行なしで例外を投げるため .limit(1) で安全に取得
+        rows = (
             sb.table("email_config")
             .select("imap_server, imap_port, email_address, sender_email, days_back")
             .eq("tenant_id", _DEFAULT_TENANT_ID)
-            .single()
+            .limit(1)
             .execute()
         )
-        if row.data:
-            return EmailConfigOut(**row.data)
-    except Exception:
-        pass
+        if rows.data:
+            return EmailConfigOut(**rows.data[0])
+    except Exception as e:
+        print(f"[email_config GET] Supabase error: {e}")
     return EmailConfigOut(
         imap_server=os.environ.get("EMAIL_IMAP_SERVER", ""),
         imap_port=int(os.environ.get("EMAIL_IMAP_PORT", "993")),
@@ -186,12 +187,12 @@ async def get_email_config():
 async def update_email_config(body: EmailConfigIn):
     """
     メール設定を保存。
-    Supabase の email_config テーブルへの upsert を試み、
-    テーブルが存在しない場合は backend/.env.local を直接更新する。
+    Supabase の email_config テーブルへの保存を試み、
+    テーブルが存在しない、または書き込みエラーの場合は backend/.env.local を直接更新する。
     """
     from pathlib import Path
 
-    # ── Supabase upsert を試みる ──────────────────────────────────────────
+    # ── Supabase 保存を試みる ──────────────────────────────────────────
     sb = get_supabase()
     payload: Dict[str, Any] = {
         "tenant_id": _DEFAULT_TENANT_ID,
@@ -205,9 +206,15 @@ async def update_email_config(body: EmailConfigIn):
         payload["password"] = body.password
 
     try:
-        sb.table("email_config").upsert(payload, on_conflict="tenant_id").execute()
-    except Exception:
-        # テーブルが存在しない → .env.local に書き込む
+        # ON CONFLICT 一意制約がない場合でも動くように select + update / insert 構成にする
+        check_row = sb.table("email_config").select("id").eq("tenant_id", _DEFAULT_TENANT_ID).limit(1).execute()
+        if check_row.data:
+            sb.table("email_config").update(payload).eq("tenant_id", _DEFAULT_TENANT_ID).execute()
+        else:
+            sb.table("email_config").insert(payload).execute()
+    except Exception as e:
+        print(f"[email_config PUT] Supabase upsert failed, falling back to .env.local: {e}")
+        # テーブルが存在しない、または接続エラーの場合は .env.local に書き込む
         _update_env_file(body)
 
     # 環境変数をプロセス内でも即時反映

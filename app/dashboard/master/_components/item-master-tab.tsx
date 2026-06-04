@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, Save, RotateCcw, Loader2 } from "lucide-react";
 
@@ -74,6 +74,11 @@ interface Props {
 export function ItemMasterTab({ initialRows }: Props) {
   const [rows, setRows] = useState<LocalRow[]>(initialRows.map(toLocal));
   const [isPending, startTransition] = useTransition();
+
+  // サーバーサイドからのプロップ更新をステートに同期する
+  useEffect(() => {
+    setRows(initialRows.map(toLocal));
+  }, [initialRows]);
 
   function update(localId: string, patch: Partial<LocalRow>) {
     setRows((prev) =>

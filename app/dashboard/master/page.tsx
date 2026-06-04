@@ -91,7 +91,12 @@ export default async function MasterPage() {
         </TabsContent>
 
         <TabsContent value="prices" className="mt-4">
-          <PriceMasterTab priceMaster={pricesResult.success ? pricesResult.data : []} />
+          <PriceMasterTab
+            priceMaster={pricesResult.success ? pricesResult.data : []}
+            customers={customersResult.success ? customersResult.data : []}
+            standards={standardsResult.success ? standardsResult.data : []}
+            products={productsResult.success ? productsResult.data : []}
+          />
         </TabsContent>
       </Tabs>
     </div>

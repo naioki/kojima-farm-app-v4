@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -122,6 +122,11 @@ function CustomerForm({
 export function CustomersTab({ customers: initial }: CustomersTabProps) {
   const [customers, setCustomers] = useState(initial);
   const [isPending, startTransition] = useTransition();
+
+  // サーバーサイドからのプロップ更新をステートに同期する
+  useEffect(() => {
+    setCustomers(initial);
+  }, [initial]);
   const [editTarget, setEditTarget] = useState<Customer | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
