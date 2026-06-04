@@ -13,7 +13,7 @@ if _ENV_FILE.exists():
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import ocr, orders, email_fetch, config
+from app.routers import ocr, orders, email_fetch, config, chat
 
 app = FastAPI(
     title="小島農園 管理システム API",
@@ -43,6 +43,7 @@ app.include_router(ocr.router,          prefix="/api/ocr",    tags=["OCR"])
 app.include_router(orders.router,       prefix="/api/orders", tags=["Orders"])
 app.include_router(email_fetch.router,  prefix="/api/email",  tags=["Email"])
 app.include_router(config.router,       prefix="/api/config", tags=["Config"])
+app.include_router(chat.router,         prefix="/api/chat",   tags=["Chat"])
 
 
 @app.get("/api/health")
