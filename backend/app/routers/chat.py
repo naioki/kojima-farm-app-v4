@@ -308,10 +308,6 @@ async def discord_webhook(request: Request):
                     }
                 }
 
-            # 解析非同期トリガー
-            # インタラクション制限（3秒）を避けるため、最初に「処理中」を返しつつ裏で動かす
-            _send_discord_message(f"🔍 {date_val} 出荷分の注文メールを取得・解析しています。少々お待ちください...")
-            
             # バックグラウンド実行（簡易的）
             import asyncio
             asyncio.create_task(_run_fetch_and_parse_discord(date_val, user_id))
@@ -330,32 +326,13 @@ async def discord_webhook(request: Request):
         if custom_id.startswith("approve:"):
             _, verif_id, order_date = custom_id.split(":")
             
-            _send_discord_message(f"⚙️ 注文 {order_date} を確定し、自動印刷ジョブを登録しています...")
-            
-            res = await approve_and_queue_print(verif_id, order_date, reviewed_by=user_id)
-            if res["success"]:
-                # 完了通知
-                embeds = [
-                    {
-                        "title": "✅ 注文確定 ＆ 印刷キュー登録完了",
-                        "description": f"日付: **{order_date}**\n受注ID: `{res['order_id'][:8]}...`\n印刷ジョブID: `{res['job_id'][:8]}...`",
-                        "color": 3066993,
-                        "fields": [
-                            {"name": "注文店舗", "value": ", ".join(list({l["store"] for l in res["lines"]})) or "なし", "inline": True},
-                            {"name": "総明細数", "value": f"{len(res['lines'])} 件", "inline": True}
-                        ]
-                    }
-                ]
-                _send_discord_message(f"🖨️ 事務所のPCで自動印刷が開始されます。", embeds=embeds)
-            else:
-                _send_discord_message(f"❌ 確定処理に失敗しました:\n**{res['error']}**")
-            
+            import asyncio
+            asyncio.create_task(_run_approve_and_queue_print_discord(verif_id, order_date, user_id))
             return {"type": 6} # 応答なしでInteractionを終了
 
         # 日付選択処理: select_date:[date]
         elif custom_id.startswith("select_date:"):
             _, order_date = custom_id.split(":")
-            _send_discord_message(f"🔍 {order_date} 出荷分の注文メールを取得・解析しています。少々お待ちください...")
             import asyncio
             asyncio.create_task(_run_fetch_and_parse_discord(order_date, user_id))
             return {"type": 6}
@@ -411,6 +388,7 @@ async def discord_webhook(request: Request):
 
 
 async def _run_fetch_and_parse_discord(date_val: str, user_id: str):
+    _send_discord_message(f"🔍 {date_val} 出荷分の注文メールを取得・解析しています。少々お待ちください...")
     res = await fetch_and_parse_for_date(date_val)
     if not res["success"]:
         _send_discord_message(f"❌ 解析失敗: {res['error']}")
@@ -420,6 +398,27 @@ async def _run_fetch_and_parse_discord(date_val: str, user_id: str):
     if not verifs:
         _send_discord_message(f"📭 {date_val} 受信の新規の注文メールはありませんでした。")
         return
+
+
+async def _run_approve_and_queue_print_discord(verif_id: str, order_date: str, user_id: str):
+    _send_discord_message(f"⚙️ 注文 {order_date} を確定し、自動印刷ジョブを登録しています...")
+    res = await approve_and_queue_print(verif_id, order_date, reviewed_by=user_id)
+    if res["success"]:
+        # 完了通知
+        embeds = [
+            {
+                "title": "✅ 注文確定 ＆ 印刷キュー登録完了",
+                "description": f"日付: **{order_date}**\n受注ID: `{res['order_id'][:8]}...`\n印刷ジョブID: `{res['job_id'][:8]}...`",
+                "color": 3066993,
+                "fields": [
+                    {"name": "注文店舗", "value": ", ".join(list({l["store"] for l in res["lines"]})) or "なし", "inline": True},
+                    {"name": "総明細数", "value": f"{len(res['lines'])} 件", "inline": True}
+                ]
+            }
+        ]
+        _send_discord_message(f"🖨️ 事務所のPCで自動印刷が開始されます。", embeds=embeds)
+    else:
+        _send_discord_message(f"❌ 確定処理に失敗しました:\n**{res['error']}**")
 
     # 解析結果をボタン付きで送信
     for v in verifs:
