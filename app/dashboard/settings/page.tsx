@@ -133,6 +133,8 @@ export default function SettingsPage() {
         toast.error("バックエンドに接続できません");
       }
     });
+  }
+
   function handleSaveChat() {
     startSaveChat(async () => {
       const res = await fetch(`${API_URL}/api/config/chat`, {
