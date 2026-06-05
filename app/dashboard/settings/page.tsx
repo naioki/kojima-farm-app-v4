@@ -290,7 +290,7 @@ export default function SettingsPage() {
               <Label>Google Chat Webhook URL</Label>
               <Input
                 placeholder="https://chat.googleapis.com/v1/spaces/..."
-                value={chatConfig.google_chat_webhook_url}
+                value={chatConfig.google_chat_webhook_url ?? ""}
                 onChange={(e) => setChatConfig((p) => ({ ...p, google_chat_webhook_url: e.target.value }))}
               />
             </div>
@@ -305,7 +305,7 @@ export default function SettingsPage() {
               <Label>Discord Webhook URL</Label>
               <Input
                 placeholder="https://discord.com/api/webhooks/..."
-                value={chatConfig.discord_webhook_url}
+                value={chatConfig.discord_webhook_url ?? ""}
                 onChange={(e) => setChatConfig((p) => ({ ...p, discord_webhook_url: e.target.value }))}
               />
             </div>
@@ -313,7 +313,7 @@ export default function SettingsPage() {
               <Label>操作を許可する Discord ユーザーID（カンマ区切り、空欄で制限なし）</Label>
               <Input
                 placeholder="123456789012345678, 987654321098765432"
-                value={chatConfig.allowed_discord_users}
+                value={chatConfig.allowed_discord_users ?? ""}
                 onChange={(e) => setChatConfig((p) => ({ ...p, allowed_discord_users: e.target.value }))}
               />
             </div>
@@ -329,7 +329,7 @@ export default function SettingsPage() {
                 <Label>LINE Works Bot ID</Label>
                 <Input
                   placeholder="123456"
-                  value={chatConfig.line_works_bot_id}
+                  value={chatConfig.line_works_bot_id ?? ""}
                   onChange={(e) => setChatConfig((p) => ({ ...p, line_works_bot_id: e.target.value }))}
                 />
               </div>
@@ -337,7 +337,7 @@ export default function SettingsPage() {
                 <Label>LINE Works API トークン</Label>
                 <Input
                   placeholder="ey..."
-                  value={chatConfig.line_works_api_token}
+                  value={chatConfig.line_works_api_token ?? ""}
                   onChange={(e) => setChatConfig((p) => ({ ...p, line_works_api_token: e.target.value }))}
                 />
               </div>
@@ -346,7 +346,7 @@ export default function SettingsPage() {
               <Label>操作を許可する LINE Works ユーザーID（カンマ区切り、空欄で制限なし）</Label>
               <Input
                 placeholder="user_id_1, user_id_2"
-                value={chatConfig.allowed_line_users}
+                value={chatConfig.allowed_line_users ?? ""}
                 onChange={(e) => setChatConfig((p) => ({ ...p, allowed_line_users: e.target.value }))}
               />
             </div>
