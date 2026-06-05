@@ -48,7 +48,8 @@ def register_commands():
         data=json.dumps(commands).encode("utf-8"),
         headers={
             "Authorization": f"Bot {bot_token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "DiscordBot (https://github.com/discord/discord-api-docs, v10)"
         },
         method="PUT"
     )
