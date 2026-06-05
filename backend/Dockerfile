@@ -18,6 +18,8 @@ COPY . .
 # フォントが assets/ に存在することを確認
 RUN test -f assets/ipaexg.ttf || (echo "ERROR: assets/ipaexg.ttf not found" && exit 1)
 
-EXPOSE 8000
+# Cloud Run は環境変数 PORT (通常 8080) での待受を要求します
+EXPOSE 8080
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+
