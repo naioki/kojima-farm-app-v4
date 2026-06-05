@@ -5,15 +5,39 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
+import hmac
 import httpx
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, Header, Request, Response, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, Request, Response, HTTPException
 from pydantic import BaseModel
 
 from app.services.chat_automation import fetch_and_parse_for_date, approve_and_queue_print
 
 router = APIRouter()
+
+
+def _verify_discord_signature(body_bytes: bytes, signature: str, timestamp: str) -> bool:
+    """
+    Discord Interactions の Ed25519 署名を検証する。
+    DISCORD_PUBLIC_KEY 環境変数が未設定の場合はスキップ（開発環境向け）。
+    """
+    public_key_hex = os.environ.get("DISCORD_PUBLIC_KEY", "")
+    if not public_key_hex:
+        # 公開鍵未設定 → 検証スキップ（ローカル開発用フォールバック）
+        return True
+
+    try:
+        from nacl.signing import VerifyKey
+        from nacl.exceptions import BadSignatureError
+
+        verify_key = VerifyKey(bytes.fromhex(public_key_hex))
+        message = (timestamp.encode() + body_bytes)
+        verify_key.verify(message, bytes.fromhex(signature))
+        return True
+    except Exception:
+        return False
 
 def _get_recent_dates_options() -> list[tuple[str, str]]:
     """昨日、今日、明日の日付（表示用ラベル, YYYY-MM-DD形式）を取得"""
@@ -241,50 +265,58 @@ class DiscordInteraction(BaseModel):
 
 
 @router.post("/discord")
-async def discord_webhook(request: Request):
+async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     Discord からの Interactions Webhook を受信。
-    ※ 簡易的な実装のため、署名検証は必要に応じて有効にしてください。
+    Ed25519 署名検証 + FastAPI BackgroundTasks で確実に処理する。
     """
-    body = await request.json()
+    # ─── 1. 署名検証（Discord必須）─────────────────────────────────────────
+    body_bytes = await request.body()
+    signature = request.headers.get("X-Signature-Ed25519", "")
+    timestamp = request.headers.get("X-Signature-Timestamp", "")
+
+    if not _verify_discord_signature(body_bytes, signature, timestamp):
+        raise HTTPException(status_code=401, detail="Invalid request signature")
+
+    import json
+    body = json.loads(body_bytes)
     interaction_type = body.get("type")
 
-    # Discord の生存確認（PING）への応答
+    # ─── 2. Discord PING（疎通確認）への即答 ──────────────────────────────
     if interaction_type == 1:
         return {"type": 1}
 
-    # ボタン押下やコマンド送信時
+    # ─── 3. ユーザー情報取得 ────────────────────────────────────────────────
     user_info = body.get("member", {}).get("user", {}) or body.get("user", {})
     user_id = user_info.get("id")
     user_name = user_info.get("username", "Unknown")
 
-    # ユーザー制限
-    config = _get_chat_config()
-    allowed_users = config["allowed_discord_users"]
+    # ─── 4. ユーザー制限 ─────────────────────────────────────────────────────
+    cfg = _get_chat_config()
+    allowed_users = cfg["allowed_discord_users"]
     if allowed_users and user_id not in allowed_users:
         return {
             "type": 4,
             "data": {
-                "content": f"⚠️ {user_name} 様は、このシステムの操作権限がありません。"
+                "content": f"⚠️ {user_name} 様は、このシステムの操作権限がありません。",
+                "flags": 64  # Ephemeral（本人のみ表示）
             }
         }
 
-
-    # 1. スラッシュコマンドまたはメッセージ受信
+    # ─── 5. スラッシュコマンド（type=2） ────────────────────────────────────
     if interaction_type == 2:
         cmd_data = body.get("data", {})
         cmd_name = cmd_data.get("name")
-        
-        # 例: /order-print [date]
-        if cmd_name == "order-print" or cmd_name == "印刷":
+
+        if cmd_name in ("order-print", "印刷"):
             options = cmd_data.get("options", [])
             date_val = None
             for opt in options:
-                if opt.get("name") == "date" or opt.get("name") == "日付":
+                if opt.get("name") in ("date", "日付"):
                     date_val = _resolve_date_from_text(opt.get("value", ""))
-            
+
             if not date_val:
-                # 日付が指定されていない場合は、直近の日付選択ボタンを返す
+                # 日付未指定 → 選択ボタンを返す
                 recent_options = _get_recent_dates_options()
                 components = [
                     {
@@ -293,7 +325,7 @@ async def discord_webhook(request: Request):
                             {
                                 "type": 2,
                                 "label": label,
-                                "style": 1, # Primary (Blue)
+                                "style": 1,
                                 "custom_id": f"select_date:{val}"
                             }
                             for label, val in recent_options
@@ -308,39 +340,31 @@ async def discord_webhook(request: Request):
                     }
                 }
 
-            # バックグラウンド実行（簡易的）
-            import asyncio
-            asyncio.create_task(_run_fetch_and_parse_discord(date_val, user_id))
-            
+            # 日付あり → バックグラウンドで処理開始し、即座に返答
+            background_tasks.add_task(_run_fetch_and_parse_discord, date_val, user_id)
             return {
                 "type": 4,
-                "data": {"content": "処理を開始しました。"}
+                "data": {"content": f"🔍 {date_val} 出荷分の注文を処理開始しました。結果はこのチャンネルに送信します..."}
             }
 
-
-    # 2. ボタンコンポーネント押下（承認ボタンなど）
+    # ─── 6. ボタン押下（type=3） ─────────────────────────────────────────────
     elif interaction_type == 3:
         custom_id = body.get("data", {}).get("custom_id", "")
-        
-        # 承認処理: approve:[verification_id]:[date]
-        if custom_id.startswith("approve:"):
-            _, verif_id, order_date = custom_id.split(":")
-            
-            import asyncio
-            asyncio.create_task(_run_approve_and_queue_print_discord(verif_id, order_date, user_id))
-            return {"type": 6} # 応答なしでInteractionを終了
 
-        # 日付選択処理: select_date:[date]
-        elif custom_id.startswith("select_date:"):
-            _, order_date = custom_id.split(":")
-            import asyncio
-            asyncio.create_task(_run_fetch_and_parse_discord(order_date, user_id))
+        if custom_id.startswith("approve:"):
+            parts = custom_id.split(":")
+            _, verif_id, order_date = parts[0], parts[1], parts[2]
+            background_tasks.add_task(_run_approve_and_queue_print_discord, verif_id, order_date, user_id)
             return {"type": 6}
 
+        elif custom_id.startswith("select_date:"):
+            _, order_date = custom_id.split(":")
+            background_tasks.add_task(_run_fetch_and_parse_discord, order_date, user_id)
+            return {"type": 6}
 
-        # 修正モーダルのトリガー: edit_trigger:[verification_id]:[date]
         elif custom_id.startswith("edit_trigger:"):
-            _, verif_id, order_date = custom_id.split(":")
+            parts = custom_id.split(":")
+            _, verif_id, order_date = parts[0], parts[1], parts[2]
             return {
                 "type": 9,
                 "data": {
@@ -364,11 +388,12 @@ async def discord_webhook(request: Request):
                 }
             }
 
-    # 3. モーダル送信時 (MODAL_SUBMIT)
+    # ─── 7. モーダル送信（type=5） ───────────────────────────────────────────
     elif interaction_type == 5:
         custom_id = body.get("data", {}).get("custom_id", "")
         if custom_id.startswith("edit_modal:"):
-            _, verif_id, order_date = custom_id.split(":")
+            parts = custom_id.split(":")
+            _, verif_id, order_date = parts[0], parts[1], parts[2]
             components = body.get("data", {}).get("components", [])
             notes = ""
             for row in components:
@@ -377,11 +402,7 @@ async def discord_webhook(request: Request):
                         notes = comp.get("value", "")
 
             _send_discord_message(f"⚙️ 注文データを修正しています（指示: 「{notes}」）...")
-
-            # バックグラウンド実行（Gemini 呼び出し時間を考慮）
-            import asyncio
-            asyncio.create_task(_run_edit_and_preview_discord(verif_id, order_date, notes))
-            
+            background_tasks.add_task(_run_edit_and_preview_discord, verif_id, order_date, notes)
             return {"type": 6}
 
     return {"type": 4, "data": {"content": "不明なコマンドです。"}}
