@@ -432,3 +432,53 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
         "pdf_url": pdf_url,
         "lines": order_data
     }
+
+
+async def modify_verification_lines(verification_id: str, notes: str) -> Dict[str, Any]:
+    """
+    指定された verification_id の parsed_lines を、ユーザーの修正指示 notes に基づいて
+    Gemini で修正・更新します。
+    """
+    sb = get_supabase()
+    verif_id_str = str(verification_id)
+
+    # 1. 既存レコードの確認
+    verif_row = sb.table("ocr_verifications").select("*").eq("id", verif_id_str).single().execute()
+    if not verif_row.data:
+        return {"success": False, "error": "該当の検証レコードが見つかりません。"}
+    
+    verif = verif_row.data
+    current_lines = verif.get("parsed_lines") or []
+    
+    api_key = _get_api_key()
+    if not api_key:
+        return {"success": False, "error": "GEMINI_API_KEY が設定されていません。"}
+
+    try:
+        # 修正実行
+        from app.services.ocr_parser import modify_order_data_with_notes
+        updated_lines = modify_order_data_with_notes(current_lines, notes, api_key)
+        
+        # 検証・補正処理を通して、店舗名や品目名のフォーマットを再度安全にする
+        validated_lines, _, _ = validate_and_fix_order_data(updated_lines, auto_learn=False)
+        
+    except Exception as e:
+        return {"success": False, "error": f"修正処理に失敗しました: {e}"}
+
+    # 2. レコード更新
+    try:
+        sb.table("ocr_verifications").update({
+            "parsed_lines": validated_lines,
+            "status": "needs_review", # 再レビュー待ちに維持
+        }).eq("id", verif_id_str).execute()
+    except Exception as e:
+        return {"success": False, "error": f"DBの更新に失敗しました: {e}"}
+
+    return {
+        "success": True,
+        "verification_id": verif_id_str,
+        "subject": verif.get("confidence_flags", {}).get("subject", "注文書"),
+        "from": verif.get("confidence_flags", {}).get("from", ""),
+        "lines": validated_lines
+    }
+

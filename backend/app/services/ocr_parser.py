@@ -485,3 +485,60 @@ def generate_summary_table(order_data: List[Dict]) -> List[Dict]:
             }
         )
     return summary
+
+
+def modify_order_data_with_notes(current_lines: List[Dict], notes: str, api_key: str) -> List[Dict]:
+    """
+    既存の注文明細リストを、ユーザーのテキスト指示に基づいて Gemini API で修正・更新します。
+    """
+    prompt = f"""
+ユーザーから注文データの修正指示がありました。
+現在の注文明細データ（JSON）と、ユーザーからの修正指示（自然言語）を受け取り、指示通りに修正した新しい明細データ（JSON）を出力してください。
+
+【現在の注文明細データ】
+{json.dumps(current_lines, ensure_ascii=False, indent=2)}
+
+【ユーザーからの修正指示】
+{notes}
+
+【指示】
+- 指示に従って数量（boxes: 箱数, remainder: バラ数）を変更してください。
+- 該当する商品や店舗が明示的に指定されている場合はそれを対象にしてください。
+- 「1行目」「2番目」のように番号で指示されている場合は、現在のデータのインデックス（1から始まるインデックス）に対応させて適切に解釈し、修正してください。
+- 数量の増減（例: 「+5箱」「3箱増やす」「2減らす」など）が指示されている場合は、現在の値にその数を加算または減算してください。
+- 元のデータにある店舗名（store）や品名（item）、規格（spec）、入数（unit）などは、明示的な変更指示がない限りそのまま維持してください。
+- 出力は必ず以下の形式のJSON配列のみとし、余計な説明やマークダウンタグ（```jsonなど）は含めないでください。
+
+【出力フォーマット】
+[
+  {{
+    "store": "店舗名",
+    "item": "品名",
+    "spec": "規格",
+    "unit": 10,
+    "boxes": 12,
+    "remainder": 0
+  }},
+  ...
+]
+"""
+    text = _generate_with_fallback(api_key, [prompt])
+    
+    # JSON 抽出
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        for part in text.split("```"):
+            if "{" in part and "[" in part:
+                text = part.strip()
+                break
+
+    try:
+        result = json.loads(text)
+        if isinstance(result, dict):
+            result = [result]
+        return result
+    except Exception as e:
+        print(f"[modify_order_data_with_notes] JSON parse error: {e}. Raw text: {text}")
+        raise ValueError(f"AIの応答をJSONとして解析できませんでした: {e}")
+

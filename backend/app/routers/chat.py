@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import re
 import httpx
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Header, Request, Response, HTTPException
 from pydantic import BaseModel
@@ -13,6 +14,19 @@ from pydantic import BaseModel
 from app.services.chat_automation import fetch_and_parse_for_date, approve_and_queue_print
 
 router = APIRouter()
+
+def _get_recent_dates_options() -> list[tuple[str, str]]:
+    """昨日、今日、明日の日付（表示用ラベル, YYYY-MM-DD形式）を取得"""
+    today = datetime.now()
+    yesterday = today - timedelta(days=1)
+    tomorrow = today + timedelta(days=1)
+    
+    return [
+        (f"昨日 ({yesterday.strftime('%m/%d')})", yesterday.strftime("%Y-%m-%d")),
+        (f"今日 ({today.strftime('%m/%d')})", today.strftime("%Y-%m-%d")),
+        (f"明日 ({tomorrow.strftime('%m/%d')})", tomorrow.strftime("%Y-%m-%d")),
+    ]
+
 
 from app.services.supabase_client import get_supabase
 
@@ -183,6 +197,38 @@ def _parse_date(text: str) -> Optional[str]:
     return None
 
 
+def _resolve_date_from_text(text: str) -> Optional[str]:
+    """
+    「今日」「明日」「昨日」などの相対表記、メニュー番号「1」「2」「3」、および絶対日付を解析して
+    YYYY-MM-DD 形式の文字列を返す。
+    """
+    # 印刷やいんさつなどのノイズを除去して前後の空白をトリム
+    cleaned = re.sub(r"(印刷|いんさつ|いんさつする|出荷|しゅっか|print|please|して|する|分)", "", text, flags=re.IGNORECASE)
+    cleaned = cleaned.strip()
+    
+    today = datetime.now()
+    
+    # 1. 相対表記のチェック
+    if cleaned in ["今日", "きょう", "today"]:
+        return today.strftime("%Y-%m-%d")
+    elif cleaned in ["明日", "あした", "tomorrow"]:
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif cleaned in ["昨日", "きのう", "yesterday"]:
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+    # 2. 番号・丸数字・全角数字のチェック (1=昨日, 2=今日, 3=明日)
+    if cleaned in ["1", "①", "１"]:
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    elif cleaned in ["2", "②", "２"]:
+        return today.strftime("%Y-%m-%d")
+    elif cleaned in ["3", "③", "３"]:
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        
+    # 3. 通常の日付パース (クレンジングされたテキスト or オリジナルのテキスト)
+    return _parse_date(cleaned) or _parse_date(text)
+
+
+
 # ─── Discord Interactions Endpoint (Webhook) ───────────────────────────
 
 class DiscordInteraction(BaseModel):
@@ -235,12 +281,31 @@ async def discord_webhook(request: Request):
             date_val = None
             for opt in options:
                 if opt.get("name") == "date" or opt.get("name") == "日付":
-                    date_val = _parse_date(opt.get("value", ""))
+                    date_val = _resolve_date_from_text(opt.get("value", ""))
             
             if not date_val:
+                # 日付が指定されていない場合は、直近の日付選択ボタンを返す
+                recent_options = _get_recent_dates_options()
+                components = [
+                    {
+                        "type": 1,
+                        "components": [
+                            {
+                                "type": 2,
+                                "label": label,
+                                "style": 1, # Primary (Blue)
+                                "custom_id": f"select_date:{val}"
+                            }
+                            for label, val in recent_options
+                        ]
+                    }
+                ]
                 return {
                     "type": 4,
-                    "data": {"content": "⚠️ 正しい日付を指定してください。（例: 2026-06-05）"}
+                    "data": {
+                        "content": "📅 処理する出荷日を選択してください：",
+                        "components": components
+                    }
                 }
 
             # 解析非同期トリガー
@@ -255,6 +320,7 @@ async def discord_webhook(request: Request):
                 "type": 4,
                 "data": {"content": "処理を開始しました。"}
             }
+
 
     # 2. ボタンコンポーネント押下（承認ボタンなど）
     elif interaction_type == 3:
@@ -285,6 +351,15 @@ async def discord_webhook(request: Request):
                 _send_discord_message(f"❌ 確定処理に失敗しました:\n**{res['error']}**")
             
             return {"type": 6} # 応答なしでInteractionを終了
+
+        # 日付選択処理: select_date:[date]
+        elif custom_id.startswith("select_date:"):
+            _, order_date = custom_id.split(":")
+            _send_discord_message(f"🔍 {order_date} 出荷分の注文メールを取得・解析しています。少々お待ちください...")
+            import asyncio
+            asyncio.create_task(_run_fetch_and_parse_discord(order_date, user_id))
+            return {"type": 6}
+
 
         # 修正モーダルのトリガー: edit_trigger:[verification_id]:[date]
         elif custom_id.startswith("edit_trigger:"):
@@ -416,21 +491,47 @@ async def lineworks_webhook(request: Request):
         
         if content_type == "text":
             text = content.get("text", "").strip()
-            date_val = _parse_date(text)
             
-            if date_val:
-                _send_line_works_message(user_id, {"content": {"type": "text", "text": f"🔍 {date_val} のメール注文を処理しています。お待ちください..."}})
-                
-                # 非同期実行
-                import asyncio
-                asyncio.create_task(_run_fetch_and_parse_line(date_val, user_id))
-            else:
-                _send_line_works_message(user_id, {
-                    "content": {
-                        "type": "text", 
-                        "text": "日付を送信してください。（例: 6/5 や 2026-06-05 と送信すると自動処理が始まります）"
+            if text == "印刷" or text == "いんさつ":
+                options = _get_recent_dates_options()
+                actions = [
+                    {
+                        "type": "postback",
+                        "label": label,
+                        "data": f"action=select_date&date={val}"
                     }
-                })
+                    for label, val in options
+                ]
+                
+                content_text = "📅 処理する出荷日を選択してください：\n"
+                for idx, (label, val) in enumerate(options):
+                    content_text += f"\n{idx+1}. {label}"
+                content_text += "\n\n上のボタンをタップするか、番号（1〜3）や「今日」「明日」などの文字をそのまま送信してください。"
+                
+                message_object = {
+                    "content": {
+                        "type": "button_template",
+                        "contentText": content_text,
+                        "actions": actions
+                    }
+                }
+                _send_line_works_message(user_id, message_object)
+            else:
+                date_val = _resolve_date_from_text(text)
+                if date_val:
+                    _send_line_works_message(user_id, {"content": {"type": "text", "text": f"🔍 {date_val} のメール注文を処理しています。お待ちください..."}})
+                    
+                    # 非同期実行
+                    import asyncio
+                    asyncio.create_task(_run_fetch_and_parse_line(date_val, user_id))
+                else:
+                    _send_line_works_message(user_id, {
+                        "content": {
+                            "type": "text", 
+                            "text": "日付または番号を選択してください。（例: 「今日」「明日」や番号の「2」と送信するか、単に「印刷」と送信すると日付選択ボタンが表示されます）"
+                        }
+                    })
+
 
     # 2. ポストバック（ボタンクリックイベント）
     elif event_type == "postback":
@@ -459,6 +560,13 @@ async def lineworks_webhook(request: Request):
                         "text": f"❌ 登録に失敗しました:\n{res['error']}"
                     }
                 })
+
+        elif params.get("action") == "select_date":
+            order_date = params.get("date")
+            _send_line_works_message(user_id, {"content": {"type": "text", "text": f"🔍 {order_date} のメール注文を処理しています。お待ちください..."}})
+            import asyncio
+            asyncio.create_task(_run_fetch_and_parse_line(order_date, user_id))
+
 
     return Response(status_code=200)
 
@@ -547,7 +655,7 @@ async def _run_edit_and_preview_discord(verif_id: str, order_date: str, notes: s
 @router.post("/googlechat")
 async def googlechat_webhook(request: Request):
     """
-    Google Chat App からのインタラクション（ボタンクリック等）を受信
+    Google Chat App からのインタラクション（メッセージ送信、ボタンクリック等）を受信
     """
     body = await request.json()
     event_type = body.get("type")
@@ -556,15 +664,81 @@ async def googlechat_webhook(request: Request):
     if event_type == "ADDED_TO_SPACE":
         return {"text": "Kojima Farm Auto Print Agent が追加されました！"}
     
-    # ボタンクリックイベント
-    if event_type == "CARD_CLICKED":
+    # 1. ユーザーからのメッセージ送信時
+    if event_type == "MESSAGE":
+        text = body.get("message", {}).get("text", "").strip()
+        
+        if text in ["印刷", "いんさつ", "いんさつする", "print"]:
+            # 日付指定なし ➔ 日付選択ボタンをカード形式で返す
+            options = _get_recent_dates_options()
+            buttons = [
+                {
+                    "text": label,
+                    "onClick": {
+                        "action": {
+                            "actionMethodName": "select_date",
+                            "parameters": [
+                                {"key": "date", "value": val}
+                            ]
+                        }
+                    }
+                }
+                for label, val in options
+            ]
+            
+            card_text = "📅 処理する出荷日を選択してください：<br>"
+            for idx, (label, val) in enumerate(options):
+                card_text += f"<br><b>{idx+1}. {label}</b>"
+            card_text += "<br><br>上のボタンをタップするか、番号（1〜3）や「今日」「明日」などの文字をそのまま送信してください。"
+            
+            return {
+                "cardsV2": [
+                    {
+                        "cardId": "select_date_card",
+                        "card": {
+                            "header": {
+                                "title": "📅 出荷日の選択",
+                                "subtitle": "処理する注文の出荷日を選択してください"
+                            },
+                            "sections": [
+                                {
+                                    "widgets": [
+                                        {
+                                            "textParagraph": {
+                                                "text": card_text
+                                            }
+                                        },
+                                        {
+                                            "buttonList": {
+                                                "buttons": buttons
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        else:
+            date_val = _resolve_date_from_text(text)
+            if date_val:
+                _send_google_chat_message({"text": f"🔍 {date_val} のメール注文を処理しています。お待ちください..."})
+                import asyncio
+                asyncio.create_task(_run_fetch_and_parse_googlechat(date_val))
+                return {"text": "処理を開始しました。"}
+            else:
+                return {"text": "日付または番号を選択してください。（例: 「今日」「明日」や番号の「2」と送信するか、単に「印刷」と送信すると日付選択ボタンが表示されます）"}
+
+    # 2. ボタンクリック等のカード操作時
+    elif event_type == "CARD_CLICKED":
         action = body.get("action", {})
         method = action.get("actionMethodName")
+        parameters = action.get("parameters", [])
+        params = {p["key"]: p["value"] for p in parameters}
         
+        # 確定処理
         if method == "approve_order":
-            parameters = action.get("parameters", [])
-            params = {p["key"]: p["value"] for p in parameters}
-            
             verif_id = params.get("verif_id")
             order_date = params.get("date")
             user_name = body.get("user", {}).get("displayName", "Google Chat User")
@@ -620,7 +794,50 @@ async def googlechat_webhook(request: Request):
                         }
                     ]
                 }
+        
+        # 日付選択ボタン押下時
+        elif method == "select_date":
+            order_date = params.get("date")
+            
+            _send_google_chat_message({"text": f"🔍 {order_date} 出荷分の注文メールを取得・解析しています。少々お待ちください..."})
+            import asyncio
+            asyncio.create_task(_run_fetch_and_parse_googlechat(order_date))
+            
+            return {
+                "actionResponse": {
+                    "type": "UPDATE_MESSAGE"
+                },
+                "cardsV2": [
+                    {
+                        "cardId": f"fetching_{order_date}",
+                        "card": {
+                            "header": {
+                                "title": f"⚙️ 処理を開始しました",
+                                "subtitle": f"日付: {order_date}"
+                            }
+                        }
+                    }
+                ]
+            }
                 
     return {"text": "OK"}
+
+
+async def _run_fetch_and_parse_googlechat(date_val: str):
+    """Google Chat 向けの非同期メール取得・解析タスク"""
+    res = await fetch_and_parse_for_date(date_val)
+    if not res["success"]:
+        _send_google_chat_message({"text": f"❌ 解析失敗: {res['error']}"})
+        return
+
+    verifs = res["verifications"]
+    if not verifs:
+        _send_google_chat_message({"text": f"📭 {date_val} 受信の新規の注文メールはありませんでした。"})
+        return
+
+    for v in verifs:
+        card = _build_google_chat_preview_card(v['verification_id'], v['subject'], v['from'], date_val, v['lines'])
+        _send_google_chat_message(card)
+
 
 
