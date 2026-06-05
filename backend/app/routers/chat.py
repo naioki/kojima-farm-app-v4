@@ -14,32 +14,59 @@ from app.services.chat_automation import fetch_and_parse_for_date, approve_and_q
 
 router = APIRouter()
 
-# 外部チャット通知用のトークン・URL設定（環境変数から取得）
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
-LINE_WORKS_BOT_ID = os.environ.get("LINE_WORKS_BOT_ID", "")
-LINE_WORKS_API_TOKEN = os.environ.get("LINE_WORKS_API_TOKEN", "") # LINE Works API 2.0 用トークン
-GOOGLE_CHAT_WEBHOOK_URL = os.environ.get("GOOGLE_CHAT_WEBHOOK_URL", "")
+from app.services.supabase_client import get_supabase
 
-# LINE Works ユーザー制限リスト（許可するユーザーID、環境変数でカンマ区切り）
-ALLOWED_LINE_USERS = [
-    u.strip() for u in os.environ.get("ALLOWED_LINE_USERS", "").split(",") if u.strip()
-]
-ALLOWED_DISCORD_USERS = [
-    u.strip() for u in os.environ.get("ALLOWED_DISCORD_USERS", "").split(",") if u.strip()
-]
+_DEFAULT_TENANT_ID = os.environ.get("DEFAULT_TENANT_ID", "00000000-0000-0000-0000-000000000001")
+
+def _get_chat_config() -> dict:
+    """Supabase DB の chat_config から設定を取得し、無ければ環境変数から取得（フォールバック）"""
+    sb = get_supabase()
+    try:
+        rows = (
+            sb.table("chat_config")
+            .select("discord_webhook_url, line_works_bot_id, line_works_api_token, google_chat_webhook_url, allowed_line_users, allowed_discord_users")
+            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .limit(1)
+            .execute()
+        )
+        if rows.data:
+            r = rows.data[0]
+            return {
+                "discord_webhook_url": r.get("discord_webhook_url") or os.environ.get("DISCORD_WEBHOOK_URL", ""),
+                "line_works_bot_id": r.get("line_works_bot_id") or os.environ.get("LINE_WORKS_BOT_ID", ""),
+                "line_works_api_token": r.get("line_works_api_token") or os.environ.get("LINE_WORKS_API_TOKEN", ""),
+                "google_chat_webhook_url": r.get("google_chat_webhook_url") or os.environ.get("GOOGLE_CHAT_WEBHOOK_URL", ""),
+                "allowed_line_users": [u.strip() for u in (r.get("allowed_line_users") or os.environ.get("ALLOWED_LINE_USERS", "")).split(",") if u.strip()],
+                "allowed_discord_users": [u.strip() for u in (r.get("allowed_discord_users") or os.environ.get("ALLOWED_DISCORD_USERS", "")).split(",") if u.strip()]
+            }
+    except Exception as e:
+        print(f"[chat config fetch error] {e}")
+        
+    return {
+        "discord_webhook_url": os.environ.get("DISCORD_WEBHOOK_URL", ""),
+        "line_works_bot_id": os.environ.get("LINE_WORKS_BOT_ID", ""),
+        "line_works_api_token": os.environ.get("LINE_WORKS_API_TOKEN", ""),
+        "google_chat_webhook_url": os.environ.get("GOOGLE_CHAT_WEBHOOK_URL", ""),
+        "allowed_line_users": [u.strip() for u in os.environ.get("ALLOWED_LINE_USERS", "").split(",") if u.strip()],
+        "allowed_discord_users": [u.strip() for u in os.environ.get("ALLOWED_DISCORD_USERS", "").split(",") if u.strip()]
+    }
+
 
 
 def _send_google_chat_message(card_payload: dict):
     """Google Chat Webhook経由でメッセージ（またはCard v2）を送信"""
-    if not GOOGLE_CHAT_WEBHOOK_URL:
+    config = _get_chat_config()
+    url = config["google_chat_webhook_url"]
+    if not url:
         print("[Google Chat Outbound] GOOGLE_CHAT_WEBHOOK_URL is not set")
         return
     
     try:
-        r = httpx.post(GOOGLE_CHAT_WEBHOOK_URL, json=card_payload, timeout=10)
+        r = httpx.post(url, json=card_payload, timeout=10)
         r.raise_for_status()
     except Exception as e:
         print(f"[Google Chat Outbound] Failed to send message: {e}")
+
 
 
 def _build_google_chat_preview_card(verif_id: str, subject: str, sender: str, date_val: str, lines: list) -> dict:
@@ -98,7 +125,9 @@ def _build_google_chat_preview_card(verif_id: str, subject: str, sender: str, da
 
 def _send_discord_message(content: str, embeds: list = None, components: list = None):
     """Discord Webhook経由でメッセージ（またはインタラクティブボタン）を送信"""
-    if not DISCORD_WEBHOOK_URL:
+    config = _get_chat_config()
+    url = config["discord_webhook_url"]
+    if not url:
         print("[Discord Outbound] DISCORD_WEBHOOK_URL is not set")
         return
     
@@ -109,7 +138,7 @@ def _send_discord_message(content: str, embeds: list = None, components: list = 
         payload["components"] = components
 
     try:
-        r = httpx.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        r = httpx.post(url, json=payload, timeout=10)
         r.raise_for_status()
     except Exception as e:
         print(f"[Discord Outbound] Failed to send message: {e}")
@@ -117,13 +146,16 @@ def _send_discord_message(content: str, embeds: list = None, components: list = 
 
 def _send_line_works_message(to_user_id: str, content_object: dict):
     """LINE Works API経由でメッセージを送信"""
-    if not LINE_WORKS_BOT_ID or not LINE_WORKS_API_TOKEN:
+    config = _get_chat_config()
+    bot_id = config["line_works_bot_id"]
+    token = config["line_works_api_token"]
+    if not bot_id or not token:
         print("[LINE Works Outbound] Config missing")
         return
 
-    url = f"https://www.worksapis.com/v1.0/bots/{LINE_WORKS_BOT_ID}/users/{to_user_id}/messages"
+    url = f"https://www.worksapis.com/v1.0/bots/{bot_id}/users/{to_user_id}/messages"
     headers = {
-        "Authorization": f"Bearer {LINE_WORKS_API_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
 
@@ -131,6 +163,7 @@ def _send_line_works_message(to_user_id: str, content_object: dict):
         r = httpx.post(url, json=content_object, headers=headers, timeout=10)
         r.raise_for_status()
     except Exception as e:
+
         print(f"[LINE Works Outbound] Failed to send message: {e}")
 
 
@@ -180,13 +213,16 @@ async def discord_webhook(request: Request):
     user_name = user_info.get("username", "Unknown")
 
     # ユーザー制限
-    if ALLOWED_DISCORD_USERS and user_id not in ALLOWED_DISCORD_USERS:
+    config = _get_chat_config()
+    allowed_users = config["allowed_discord_users"]
+    if allowed_users and user_id not in allowed_users:
         return {
             "type": 4,
             "data": {
                 "content": f"⚠️ {user_name} 様は、このシステムの操作権限がありません。"
             }
         }
+
 
     # 1. スラッシュコマンドまたはメッセージ受信
     if interaction_type == 2:
@@ -366,9 +402,12 @@ async def lineworks_webhook(request: Request):
         return Response(status_code=200)
 
     # ユーザー制限
-    if ALLOWED_LINE_USERS and user_id not in ALLOWED_LINE_USERS:
+    config = _get_chat_config()
+    allowed_users = config["allowed_line_users"]
+    if allowed_users and user_id not in allowed_users:
         _send_line_works_message(user_id, {"content": {"type": "text", "text": "⚠️ 操作権限がありません。"}})
         return Response(status_code=200)
+
 
     # 1. テキストメッセージ受信時
     if event_type == "message":

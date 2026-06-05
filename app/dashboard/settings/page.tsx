@@ -21,6 +21,15 @@ interface EmailConfig {
   password?: string;
 }
 
+interface ChatConfig {
+  discord_webhook_url: string;
+  line_works_bot_id: string;
+  line_works_api_token: string;
+  google_chat_webhook_url: string;
+  allowed_line_users: string;
+  allowed_discord_users: string;
+}
+
 export default function SettingsPage() {
   const [config, setConfig] = useState<EmailConfig>({
     imap_server: "",
@@ -30,20 +39,39 @@ export default function SettingsPage() {
     days_back: 3,
     password: "",
   });
+  const [chatConfig, setChatConfig] = useState<ChatConfig>({
+    discord_webhook_url: "",
+    line_works_bot_id: "",
+    line_works_api_token: "",
+    google_chat_webhook_url: "",
+    allowed_line_users: "",
+    allowed_discord_users: "",
+  });
   const [loading, setLoading] = useState(true);
   const [isSaving, startSave] = useTransition();
+  const [isSavingChat, startSaveChat] = useTransition();
   const [isTesting, startTest] = useTransition();
 
   // 現在の設定を取得
   useEffect(() => {
+    // メール設定取得
     fetch(`${API_URL}/api/config/email`)
       .then((r) => r.json())
       .then((data) => {
         setConfig((prev) => ({ ...prev, ...data, password: "" }));
       })
-      .catch(() => toast.error("設定の取得に失敗しました"))
+      .catch(() => toast.error("メール設定の取得に失敗しました"));
+
+    // チャット設定取得
+    fetch(`${API_URL}/api/config/chat`)
+      .then((r) => r.json())
+      .then((data) => {
+        setChatConfig(data);
+      })
+      .catch(() => toast.error("チャット連携設定の取得に失敗しました"))
       .finally(() => setLoading(false));
   }, []);
+
 
   function handleSave() {
     startSave(async () => {
@@ -105,7 +133,35 @@ export default function SettingsPage() {
         toast.error("バックエンドに接続できません");
       }
     });
+  function handleSaveChat() {
+    startSaveChat(async () => {
+      const res = await fetch(`${API_URL}/api/config/chat`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(chatConfig),
+      });
+
+      if (res.ok) {
+        try {
+          const saved = await res.json();
+          toast.success("チャット連携設定を保存しました");
+          setChatConfig(saved);
+        } catch {
+          toast.success("チャット連携設定を保存しました");
+        }
+      } else {
+        let errDetail = "サーバーエラーが発生しました";
+        try {
+          const err = await res.json();
+          errDetail = err.detail || errDetail;
+        } catch {
+          errDetail = await res.text().catch(() => res.statusText);
+        }
+        toast.error("チャット連携設定の保存に失敗しました", { description: errDetail });
+      }
+    });
   }
+
 
   if (loading) {
     return (
@@ -214,6 +270,95 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            🚀 チャット連携設定（LINE Works / Discord / Google Chat）
+          </CardTitle>
+          <CardDescription>
+            各チャットボットやWebhookとの通知・承認連携の設定です。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Google Chat */}
+          <div className="space-y-3">
+            <h3 className="font-semibold text-sm text-primary">● Google Chat 連携</h3>
+            <div className="space-y-2">
+              <Label>Google Chat Webhook URL</Label>
+              <Input
+                placeholder="https://chat.googleapis.com/v1/spaces/..."
+                value={chatConfig.google_chat_webhook_url}
+                onChange={(e) => setChatConfig((p) => ({ ...p, google_chat_webhook_url: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Discord */}
+          <div className="space-y-3">
+            <h3 className="font-semibold text-sm text-primary">● Discord 連携</h3>
+            <div className="space-y-2">
+              <Label>Discord Webhook URL</Label>
+              <Input
+                placeholder="https://discord.com/api/webhooks/..."
+                value={chatConfig.discord_webhook_url}
+                onChange={(e) => setChatConfig((p) => ({ ...p, discord_webhook_url: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>操作を許可する Discord ユーザーID（カンマ区切り、空欄で制限なし）</Label>
+              <Input
+                placeholder="123456789012345678, 987654321098765432"
+                value={chatConfig.allowed_discord_users}
+                onChange={(e) => setChatConfig((p) => ({ ...p, allowed_discord_users: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* LINE Works */}
+          <div className="space-y-3">
+            <h3 className="font-semibold text-sm text-primary">● LINE Works 連携</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>LINE Works Bot ID</Label>
+                <Input
+                  placeholder="123456"
+                  value={chatConfig.line_works_bot_id}
+                  onChange={(e) => setChatConfig((p) => ({ ...p, line_works_bot_id: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>LINE Works API トークン</Label>
+                <Input
+                  placeholder="ey..."
+                  value={chatConfig.line_works_api_token}
+                  onChange={(e) => setChatConfig((p) => ({ ...p, line_works_api_token: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>操作を許可する LINE Works ユーザーID（カンマ区切り、空欄で制限なし）</Label>
+              <Input
+                placeholder="user_id_1, user_id_2"
+                value={chatConfig.allowed_line_users}
+                onChange={(e) => setChatConfig((p) => ({ ...p, allowed_line_users: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <Separator />
+
+          <Button onClick={handleSaveChat} disabled={isSavingChat} className="w-full">
+            {isSavingChat ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
+            チャット連携設定を保存
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }
+

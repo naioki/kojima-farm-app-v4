@@ -234,3 +234,77 @@ async def update_email_config(body: EmailConfigIn):
         sender_email=body.sender_email,
         days_back=body.days_back,
     )
+
+
+
+# ─── Chat Config ──────────────────────────────────────────────────────────────
+
+class ChatConfigOut(BaseModel):
+    discord_webhook_url: Optional[str] = None
+    line_works_bot_id: Optional[str] = None
+    line_works_api_token: Optional[str] = None
+    google_chat_webhook_url: Optional[str] = None
+    allowed_line_users: Optional[str] = None
+    allowed_discord_users: Optional[str] = None
+
+
+@router.get("/chat", response_model=ChatConfigOut)
+async def get_chat_config():
+    sb = get_supabase()
+    try:
+        rows = (
+            sb.table("chat_config")
+            .select("discord_webhook_url, line_works_bot_id, line_works_api_token, google_chat_webhook_url, allowed_line_users, allowed_discord_users")
+            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .limit(1)
+            .execute()
+        )
+        if rows.data:
+            return ChatConfigOut(**rows.data[0])
+    except Exception as e:
+        print(f"[chat_config GET] Supabase error: {e}")
+    
+    # フォールバックとして現在の環境変数を返す
+    return ChatConfigOut(
+        discord_webhook_url=os.environ.get("DISCORD_WEBHOOK_URL", ""),
+        line_works_bot_id=os.environ.get("LINE_WORKS_BOT_ID", ""),
+        line_works_api_token=os.environ.get("LINE_WORKS_API_TOKEN", ""),
+        google_chat_webhook_url=os.environ.get("GOOGLE_CHAT_WEBHOOK_URL", ""),
+        allowed_line_users=os.environ.get("ALLOWED_LINE_USERS", ""),
+        allowed_discord_users=os.environ.get("ALLOWED_DISCORD_USERS", ""),
+    )
+
+
+@router.put("/chat", response_model=ChatConfigOut)
+async def update_chat_config(body: ChatConfigOut):
+    sb = get_supabase()
+    payload = {
+        "tenant_id": _DEFAULT_TENANT_ID,
+        "discord_webhook_url": body.discord_webhook_url or "",
+        "line_works_bot_id": body.line_works_bot_id or "",
+        "line_works_api_token": body.line_works_api_token or "",
+        "google_chat_webhook_url": body.google_chat_webhook_url or "",
+        "allowed_line_users": body.allowed_line_users or "",
+        "allowed_discord_users": body.allowed_discord_users or "",
+    }
+    
+    try:
+        check_row = sb.table("chat_config").select("id").eq("tenant_id", _DEFAULT_TENANT_ID).limit(1).execute()
+        if check_row.data:
+            sb.table("chat_config").update(payload).eq("tenant_id", _DEFAULT_TENANT_ID).execute()
+        else:
+            sb.table("chat_config").insert(payload).execute()
+    except Exception as e:
+        print(f"[chat_config PUT] Supabase upsert failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Database save failed: {e}")
+
+    # 環境変数をプロセス内でも即時反映
+    os.environ["DISCORD_WEBHOOK_URL"] = body.discord_webhook_url or ""
+    os.environ["LINE_WORKS_BOT_ID"] = body.line_works_bot_id or ""
+    os.environ["LINE_WORKS_API_TOKEN"] = body.line_works_api_token or ""
+    os.environ["GOOGLE_CHAT_WEBHOOK_URL"] = body.google_chat_webhook_url or ""
+    os.environ["ALLOWED_LINE_USERS"] = body.allowed_line_users or ""
+    os.environ["ALLOWED_DISCORD_USERS"] = body.allowed_discord_users or ""
+
+    return body
+
