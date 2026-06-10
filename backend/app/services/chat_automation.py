@@ -257,8 +257,8 @@ async def queue_print_for_existing_order(order_id: str, order_date: str) -> Dict
             "order_id": order_id,
             "pdf_url": pdf_url,
             "status": "pending",
-        }).select("id").single().execute()
-        job_id = job_row.data["id"]
+        }).select("id").execute()
+        job_id = job_row.data[0]["id"]
     except Exception as e:
         return {"success": False, "error": f"印刷キュー登録失敗: {e}"}
 
@@ -437,11 +437,11 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
     verif_id_str = str(verification_id)
 
     # 1. 既存レコードの確認
-    verif_row = sb.table("ocr_verifications").select("*").eq("id", verif_id_str).single().execute()
+    verif_row = sb.table("ocr_verifications").select("*").eq("id", verif_id_str).limit(1).execute()
     if not verif_row.data:
         return {"success": False, "error": "該当の検証レコードが見つかりません。"}
-    
-    verif = verif_row.data
+
+    verif = verif_row.data[0]
     if verif.get("status") == "corrected" and verif.get("order_id"):
         return {"success": False, "error": f"このレコードは既に承認済みです。受注ID: {verif['order_id'][:8]}..."}
 
@@ -532,9 +532,9 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
             "order_id": order_id,
             "pdf_url": pdf_url,
             "status": "pending",
-        }).select("id").single().execute()
-        
-        job_id = job_row.data["id"]
+        }).select("id").execute()
+
+        job_id = job_row.data[0]["id"]
     except Exception as e:
         return {"success": False, "error": f"印刷キュー登録失敗: {e}"}
 
@@ -556,11 +556,11 @@ async def modify_verification_lines(verification_id: str, notes: str) -> Dict[st
     verif_id_str = str(verification_id)
 
     # 1. 既存レコードの確認
-    verif_row = sb.table("ocr_verifications").select("*").eq("id", verif_id_str).single().execute()
+    verif_row = sb.table("ocr_verifications").select("*").eq("id", verif_id_str).limit(1).execute()
     if not verif_row.data:
         return {"success": False, "error": "該当の検証レコードが見つかりません。"}
-    
-    verif = verif_row.data
+
+    verif = verif_row.data[0]
     current_lines = verif.get("parsed_lines") or []
     
     api_key = _get_api_key()
