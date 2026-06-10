@@ -52,7 +52,7 @@ def _get_email_config() -> dict:
     }
 
 
-async def _resolve_lines(sb, tenant_id: str, lines: list) -> list:
+def _resolve_lines(sb, tenant_id: str, lines: list) -> list:
     """ocr.py と同様の店舗/品目/規格の自動補完・検証ロジック"""
     products_rows = sb.table("products").select("id, name").eq("tenant_id", tenant_id).execute()
     prod_by_name = {r["name"].strip(): r["id"] for r in (products_rows.data or [])}
@@ -488,7 +488,7 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
     ]
 
     try:
-        lines_payload = await _resolve_lines(sb, _DEFAULT_TENANT_ID, lines_payload)
+        lines_payload = _resolve_lines(sb, _DEFAULT_TENANT_ID, lines_payload)
     except Exception as e:
         return {"success": False, "error": f"データマスタの解決に失敗しました: {e}"}
 

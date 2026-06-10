@@ -573,7 +573,6 @@ async def _run_preview_verif_discord(verif_id: str, order_date: str):
     """未確定verificationの内容をプレビュー表示し、承認ボタンを送る"""
     from app.services.supabase_client import get_supabase
     sb = get_supabase()
-    from app.services.chat_automation import _DEFAULT_TENANT_ID as _TID
     try:
         row = sb.table("ocr_verifications").select("parsed_lines, confidence_flags, status").eq("id", verif_id).limit(1).execute()
         if not row.data:
@@ -698,7 +697,7 @@ async def _run_approve_and_queue_print_discord(verif_id: str, order_date: str, u
 # ─── LINE Works Webhook Endpoint ───────────────────────────────────────
 
 @router.post("/lineworks")
-async def lineworks_webhook(request: Request):
+async def lineworks_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     LINE Works からの Webhook イベントを受信
     """
@@ -778,22 +777,7 @@ async def lineworks_webhook(request: Request):
             order_date = params.get("date")
             
             _send_line_works_message(user_id, {"content": {"type": "text", "text": f"⚙️ {order_date} 分を登録し、印刷を開始します..."}})
-            
-            res = await approve_and_queue_print(verif_id, order_date)
-            if res["success"]:
-                _send_line_works_message(user_id, {
-                    "content": {
-                        "type": "text",
-                        "text": f"✅ 印刷キュー登録成功！\n日付: {order_date}\n受注ID: {res['order_id'][:8]}...\n事務所のプリンターより印刷されます。"
-                    }
-                })
-            else:
-                _send_line_works_message(user_id, {
-                    "content": {
-                        "type": "text",
-                        "text": f"❌ 登録に失敗しました:\n{res['error']}"
-                    }
-                })
+            background_tasks.add_task(_run_approve_and_queue_print_line, verif_id, order_date, user_id)
 
         elif params.get("action") == "select_date":
             order_date = params.get("date")
@@ -803,6 +787,21 @@ async def lineworks_webhook(request: Request):
 
 
     return Response(status_code=200)
+
+
+async def _run_approve_and_queue_print_line(verif_id: str, order_date: str, user_id: str):
+    res = await approve_and_queue_print(verif_id, order_date, reviewed_by=None)
+    if res["success"]:
+        _send_line_works_message(user_id, {
+            "content": {
+                "type": "text",
+                "text": f"✅ 印刷キュー登録成功！\n日付: {order_date}\n受注ID: {res['order_id'][:8]}...\n事務所のプリンターより印刷されます。"
+            }
+        })
+    else:
+        _send_line_works_message(user_id, {
+            "content": {"type": "text", "text": f"❌ 登録に失敗しました:\n{res['error']}"}
+        })
 
 
 async def _run_fetch_and_parse_line(date_val: str, user_id: str):
