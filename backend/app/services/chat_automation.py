@@ -443,7 +443,9 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
 
     verif = verif_row.data[0]
     if verif.get("status") == "corrected" and verif.get("order_id"):
-        return {"success": False, "error": f"このレコードは既に承認済みです。受注ID: {verif['order_id'][:8]}..."}
+        # 既に承認済みの場合はそのまま再印刷キューに登録する
+        existing_order_id = verif["order_id"]
+        return await queue_print_for_existing_order(existing_order_id, order_date_str)
 
     # reviewed_by の決定
     if not reviewed_by:
