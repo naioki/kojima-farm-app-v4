@@ -260,14 +260,15 @@ async def queue_print_for_existing_order(order_id: str, order_date: str) -> Dict
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-    pdf_filename = f"shipping_labels_{order_date.replace('-', '')}_{order_id[:8]}.pdf"
+    ts = datetime.now().strftime("%H%M%S")
+    pdf_filename = f"shipping_labels_{order_date.replace('-', '')}_{order_id[:8]}_{ts}.pdf"
     storage_path = f"shipping-pdfs/{order_date.replace('-', '')}/{pdf_filename}"
 
     try:
         sb.storage.from_("fax-images").upload(
             path=storage_path,
             file=pdf_bytes,
-            file_options={"content-type": "application/pdf"},
+            file_options={"content-type": "application/pdf", "upsert": "true"},
         )
         signed = sb.storage.from_("fax-images").create_signed_url(path=storage_path, expires_in=365*24*3600)
         pdf_url = signed.get("signedURL") or signed.get("signedUrl", storage_path)
@@ -536,14 +537,15 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
             os.unlink(tmp_path)
 
     # 4. Storage へのアップロード
-    pdf_filename = f"shipping_labels_{order_date_str.replace('-', '')}_{order_id[:8]}.pdf"
+    ts = datetime.now().strftime("%H%M%S")
+    pdf_filename = f"shipping_labels_{order_date_str.replace('-', '')}_{order_id[:8]}_{ts}.pdf"
     storage_path = f"shipping-pdfs/{order_date_str.replace('-', '')}/{pdf_filename}"
-    
+
     try:
         sb.storage.from_("fax-images").upload(
             path=storage_path,
             file=pdf_bytes,
-            file_options={"content-type": "application/pdf"},
+            file_options={"content-type": "application/pdf", "upsert": "true"},
         )
         signed = sb.storage.from_("fax-images").create_signed_url(path=storage_path, expires_in=365*24*3600)
         pdf_url = signed.get("signedURL") or signed.get("signedUrl", storage_path)
