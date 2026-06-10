@@ -40,14 +40,58 @@ def _verify_discord_signature(body_bytes: bytes, signature: str, timestamp: str)
         return False
 
 def _get_recent_dates_options() -> list[tuple[str, str]]:
-    """昨日、今日、明日の日付（表示用ラベル, YYYY-MM-DD形式）を取得"""
-    today = datetime.now()
-    yesterday = today - timedelta(days=1)
-    tomorrow = today + timedelta(days=1)
-    
+    """
+    DBから直近3件の受注日を取得して返す。
+    受注がない場合は昨日・今日・明日にフォールバック。
+    """
+    try:
+        sb = get_supabase()
+        rows = (
+            sb.table("orders")
+            .select("order_date")
+            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .order("order_date", desc=True)
+            .limit(10)  # 重複排除のため多めに取得
+            .execute()
+        )
+        if rows.data:
+            today = datetime.now().date()
+            seen: set[str] = set()
+            result: list[tuple[str, str]] = []
+            for r in rows.data:
+                d: str = r["order_date"]
+                if d in seen:
+                    continue
+                seen.add(d)
+                try:
+                    dt = datetime.strptime(d, "%Y-%m-%d").date()
+                    diff = (dt - today).days
+                    if diff == 0:
+                        label = f"今日 ({dt.strftime('%m/%d')})"
+                    elif diff == -1:
+                        label = f"昨日 ({dt.strftime('%m/%d')})"
+                    elif diff == 1:
+                        label = f"明日 ({dt.strftime('%m/%d')})"
+                    else:
+                        weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+                        label = f"{dt.strftime('%m/%d')}({weekdays[dt.weekday()]})"
+                except Exception:
+                    label = d
+                result.append((label, d))
+                if len(result) >= 3:
+                    break
+            if result:
+                return result
+    except Exception as e:
+        print(f"[recent_dates] DB取得エラー: {e}")
+
+    # フォールバック: 昨日・今日・明日
+    today_dt = datetime.now()
+    yesterday = today_dt - timedelta(days=1)
+    tomorrow = today_dt + timedelta(days=1)
     return [
         (f"昨日 ({yesterday.strftime('%m/%d')})", yesterday.strftime("%Y-%m-%d")),
-        (f"今日 ({today.strftime('%m/%d')})", today.strftime("%Y-%m-%d")),
+        (f"今日 ({today_dt.strftime('%m/%d')})", today_dt.strftime("%Y-%m-%d")),
         (f"明日 ({tomorrow.strftime('%m/%d')})", tomorrow.strftime("%Y-%m-%d")),
     ]
 
