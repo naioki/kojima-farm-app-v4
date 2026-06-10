@@ -464,39 +464,18 @@ async def _run_fetch_and_parse_discord(date_val: str, user_id: str):
         _send_discord_message(f"📭 {date_val} 受信の新規の注文メールはありませんでした。")
         return
 
-
-async def _run_approve_and_queue_print_discord(verif_id: str, order_date: str, user_id: str):
-    _send_discord_message(f"⚙️ 注文 {order_date} を確定し、自動印刷ジョブを登録しています...")
-    res = await approve_and_queue_print(verif_id, order_date, reviewed_by=user_id)
-    if res["success"]:
-        # 完了通知
-        embeds = [
-            {
-                "title": "✅ 注文確定 ＆ 印刷キュー登録完了",
-                "description": f"日付: **{order_date}**\n受注ID: `{res['order_id'][:8]}...`\n印刷ジョブID: `{res['job_id'][:8]}...`",
-                "color": 3066993,
-                "fields": [
-                    {"name": "注文店舗", "value": ", ".join(list({l["store"] for l in res["lines"]})) or "なし", "inline": True},
-                    {"name": "総明細数", "value": f"{len(res['lines'])} 件", "inline": True}
-                ]
-            }
-        ]
-        _send_discord_message(f"🖨️ 事務所のPCで自動印刷が開始されます。", embeds=embeds)
-    else:
-        _send_discord_message(f"❌ 確定処理に失敗しました:\n**{res['error']}**")
-
     # 解析結果をボタン付きで送信
     for v in verifs:
         lines_desc = ""
         for line in v["lines"]:
             lines_desc += f"- {line['store']} ➔ {line['item']} {line.get('spec','')} (入数:{line.get('unit', 0)}): **{line.get('boxes',0)}箱 {line.get('remainder',0)}バラ**\n"
-        
+
         embed = {
             "title": f"📥 受注プレビュー: {v['subject']}",
             "description": f"送信者: `{v['from']}`\n\n**読み取り明細:**\n{lines_desc or '明細なし'}",
             "color": 3447003
         }
-        
+
         components = [
             {
                 "type": 1,
@@ -522,6 +501,27 @@ async def _run_approve_and_queue_print_discord(verif_id: str, order_date: str, u
         # Google Chat にもプレビューを送信
         gc_card = _build_google_chat_preview_card(v['verification_id'], v['subject'], v['from'], date_val, v['lines'])
         _send_google_chat_message(gc_card)
+
+
+async def _run_approve_and_queue_print_discord(verif_id: str, order_date: str, user_id: str):
+    _send_discord_message(f"⚙️ 注文 {order_date} を確定し、自動印刷ジョブを登録しています...")
+    res = await approve_and_queue_print(verif_id, order_date, reviewed_by=user_id)
+    if res["success"]:
+        # 完了通知
+        embeds = [
+            {
+                "title": "✅ 注文確定 ＆ 印刷キュー登録完了",
+                "description": f"日付: **{order_date}**\n受注ID: `{res['order_id'][:8]}...`\n印刷ジョブID: `{res['job_id'][:8]}...`",
+                "color": 3066993,
+                "fields": [
+                    {"name": "注文店舗", "value": ", ".join(list({l["store"] for l in res["lines"]})) or "なし", "inline": True},
+                    {"name": "総明細数", "value": f"{len(res['lines'])} 件", "inline": True}
+                ]
+            }
+        ]
+        _send_discord_message(f"🖨️ 事務所のPCで自動印刷が開始されます。", embeds=embeds)
+    else:
+        _send_discord_message(f"❌ 確定処理に失敗しました:\n**{res['error']}**")
 
 
 
