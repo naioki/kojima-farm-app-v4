@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, BackgroundTasks, Header, Request, Response, HTTPException
 from pydantic import BaseModel
 
-from app.services.chat_automation import fetch_and_parse_for_date, approve_and_queue_print
+from app.services.chat_automation import fetch_and_parse_for_date, approve_and_queue_print, get_recent_orders, queue_print_for_existing_order
 
 router = APIRouter()
 
@@ -353,42 +353,37 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
         cmd_name = cmd_data.get("name")
 
         if cmd_name in ("order-print", "印刷"):
-            options = cmd_data.get("options", [])
-            date_val = None
-            for opt in options:
-                if opt.get("name") in ("date", "日付"):
-                    date_val = _resolve_date_from_text(opt.get("value", ""))
-
-            if not date_val:
-                # 日付未指定 → 選択ボタンを返す
-                recent_options = _get_recent_dates_options()
-                components = [
-                    {
-                        "type": 1,
-                        "components": [
-                            {
-                                "type": 2,
-                                "label": label,
-                                "style": 1,
-                                "custom_id": f"select_date:{val}"
-                            }
-                            for label, val in recent_options
-                        ]
-                    }
-                ]
+            # 最新3件の確定済み受注をボタン表示
+            recent_orders = get_recent_orders(3)
+            if not recent_orders:
                 return {
                     "type": 4,
-                    "data": {
-                        "content": "📅 処理する出荷日を選択してください：",
-                        "components": components
-                    }
+                    "data": {"content": "📭 確定済みの受注データがありません。"}
                 }
 
-            # 日付あり → バックグラウンドで処理開始し、即座に返答
-            background_tasks.add_task(_run_fetch_and_parse_discord, date_val, user_id)
+            weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+            buttons = []
+            for o in recent_orders:
+                d = o["order_date"]
+                try:
+                    dt = datetime.strptime(d, "%Y-%m-%d")
+                    label = f"{dt.strftime('%m/%d')}({weekdays[dt.weekday()]}) {o['line_count']}件"
+                except Exception:
+                    label = f"{d} {o['line_count']}件"
+                buttons.append({
+                    "type": 2,
+                    "label": label,
+                    "style": 1,
+                    "custom_id": f"print_order:{o['id']}:{d}"
+                })
+
+            components = [{"type": 1, "components": buttons}]
             return {
                 "type": 4,
-                "data": {"content": f"🔍 {date_val} 出荷分の注文を処理開始しました。結果はこのチャンネルに送信します..."}
+                "data": {
+                    "content": "🖨️ 印刷する受注を選択してください：",
+                    "components": components
+                }
             }
 
     # ─── 6. ボタン押下（type=3） ─────────────────────────────────────────────
@@ -399,6 +394,12 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
             parts = custom_id.split(":")
             _, verif_id, order_date = parts[0], parts[1], parts[2]
             background_tasks.add_task(_run_approve_and_queue_print_discord, verif_id, order_date, user_id)
+            return {"type": 6}
+
+        elif custom_id.startswith("print_order:"):
+            parts = custom_id.split(":")
+            _, order_id, order_date = parts[0], parts[1], parts[2]
+            background_tasks.add_task(_run_print_existing_order_discord, order_id, order_date)
             return {"type": 6}
 
         elif custom_id.startswith("select_date:"):
@@ -450,6 +451,20 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
             return {"type": 6}
 
     return {"type": 4, "data": {"content": "不明なコマンドです。"}}
+
+
+async def _run_print_existing_order_discord(order_id: str, order_date: str):
+    _send_discord_message(f"⚙️ {order_date} の出荷ラベルを生成しています...")
+    res = await queue_print_for_existing_order(order_id, order_date)
+    if res["success"]:
+        embeds = [{
+            "title": "✅ 印刷キュー登録完了",
+            "description": f"日付: **{order_date}**\n受注ID: `{order_id[:8]}...`\n印刷ジョブID: `{res['job_id'][:8]}...`\n明細数: {res['line_count']} 件",
+            "color": 3066993,
+        }]
+        _send_discord_message("🖨️ 事務所のPCで自動印刷が開始されます。", embeds=embeds)
+    else:
+        _send_discord_message(f"❌ 印刷キュー登録に失敗しました:\n**{res['error']}**")
 
 
 async def _run_fetch_and_parse_discord(date_val: str, user_id: str):

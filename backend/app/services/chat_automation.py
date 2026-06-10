@@ -152,6 +152,89 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
     return order_data
 
 
+def get_recent_orders(limit: int = 3) -> List[Dict]:
+    """DBから最新の確定済み受注を取得する"""
+    sb = get_supabase()
+    rows = (
+        sb.table("orders")
+        .select("id, order_date, status, notes")
+        .eq("tenant_id", _DEFAULT_TENANT_ID)
+        .eq("status", "confirmed")
+        .order("order_date", desc=True)
+        .limit(limit * 3)  # 重複日付を除くため多めに取得
+        .execute()
+    )
+    if not rows.data:
+        return []
+
+    seen_dates: set[str] = set()
+    result = []
+    for r in rows.data:
+        d = r["order_date"]
+        if d not in seen_dates:
+            seen_dates.add(d)
+            # 明細数を取得
+            lines_count = sb.table("order_lines").select("id", count="exact").eq("order_id", r["id"]).execute()
+            r["line_count"] = lines_count.count or 0
+            result.append(r)
+        if len(result) >= limit:
+            break
+    return result
+
+
+async def queue_print_for_existing_order(order_id: str, order_date: str) -> Dict[str, Any]:
+    """既存の確定済み受注からPDFを生成してprint_jobsに登録する"""
+    sb = get_supabase()
+
+    order_data = _fetch_order_lines(sb, order_id)
+    if not order_data:
+        return {"success": False, "error": "受注明細が見つかりません。"}
+
+    labels = generate_labels_from_data(order_data, order_date)
+    summary_data = generate_summary_table(order_data)
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        generator = LabelPDFGenerator(font_path=_FONT_PATH)
+        generator.generate_pdf(labels, summary_data, order_date, tmp_path)
+        with open(tmp_path, "rb") as f:
+            pdf_bytes = f.read()
+    except Exception as e:
+        return {"success": False, "error": f"PDF生成失敗: {e}"}
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    pdf_filename = f"shipping_labels_{order_date.replace('-', '')}_{order_id[:8]}.pdf"
+    storage_path = f"shipping-pdfs/{order_date.replace('-', '')}/{pdf_filename}"
+
+    try:
+        sb.storage.from_("fax-images").upload(
+            path=storage_path,
+            file=pdf_bytes,
+            file_options={"content-type": "application/pdf"},
+        )
+        signed = sb.storage.from_("fax-images").create_signed_url(path=storage_path, expires_in=365*24*3600)
+        pdf_url = signed.get("signedURL") or signed.get("signedUrl", storage_path)
+    except Exception as e:
+        return {"success": False, "error": f"PDFアップロード失敗: {e}"}
+
+    try:
+        job_row = sb.table("print_jobs").insert({
+            "tenant_id": _DEFAULT_TENANT_ID,
+            "order_id": order_id,
+            "pdf_url": pdf_url,
+            "status": "pending",
+        }).select("id").single().execute()
+        job_id = job_row.data["id"]
+    except Exception as e:
+        return {"success": False, "error": f"印刷キュー登録失敗: {e}"}
+
+    return {"success": True, "order_id": order_id, "job_id": job_id, "pdf_url": pdf_url, "line_count": len(order_data)}
+
+
 # ─── コアロジック ─────────────────────────────────────────────────────────────
 
 async def fetch_and_parse_for_date(target_date_str: str) -> Dict[str, Any]:
