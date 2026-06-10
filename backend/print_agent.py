@@ -192,11 +192,13 @@ def main():
                 if success:
                     # 5. 印刷成功時はステータスを 'printed' に更新
                     _supabase_request(
-                        "PATCH", 
-                        f"/print_jobs?id=eq.{job_id}", 
+                        "PATCH",
+                        f"/print_jobs?id=eq.{job_id}",
                         {"status": "printed"}
                     )
                     logging.info(f"Successfully processed and printed job: {job_id}")
+                    # 6. Discord に印刷完了通知
+                    send_discord_alert(f"🖨️ 印刷完了\nジョブID: `{job_id[:8]}...`")
                 else:
                     raise RuntimeError("OSの印刷プロセスが失敗しました。")
 

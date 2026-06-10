@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, BackgroundTasks, Header, Request, Response, HTTPException
 from pydantic import BaseModel
 
-from app.services.chat_automation import fetch_and_parse_for_date, approve_and_queue_print, get_recent_orders, queue_print_for_existing_order, get_pending_verifications
+from app.services.chat_automation import fetch_and_parse_for_date, approve_and_queue_print, get_recent_orders, queue_print_for_existing_order, get_pending_verifications, fetch_recent_emails
 
 router = APIRouter()
 
@@ -372,7 +372,38 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
         cmd_data = body.get("data", {})
         cmd_name = cmd_data.get("name")
 
-        if cmd_name in ("order-print", "印刷"):
+        if cmd_name in ("未確定", "pending"):
+            # 直近3日分のメールを自動取得してから未確定一覧を表示
+            background_tasks.add_task(_run_show_pending_discord)
+            return {
+                "type": 4,
+                "data": {"content": "📥 直近3日分のメールを取得中です。少々お待ちください..."}
+            }
+
+        elif cmd_name in ("確定済み", "confirmed"):
+            # 確定済み受注の最新3件を表示
+            weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+            recent_orders = get_recent_orders(3)
+            if not recent_orders:
+                return {"type": 4, "data": {"content": "📭 確定済みの受注がありません。"}}
+            buttons = []
+            for o in recent_orders:
+                d = o["order_date"]
+                try:
+                    dt = datetime.strptime(d, "%Y-%m-%d")
+                    label = f"🖨️ {dt.strftime('%m/%d')}({weekdays[dt.weekday()]}) {o['line_count']}件"
+                except Exception:
+                    label = f"🖨️ {d} {o['line_count']}件"
+                buttons.append({"type": 2, "label": label, "style": 1, "custom_id": f"print_order:{o['id']}:{d}"})
+            return {
+                "type": 4,
+                "data": {
+                    "content": "🖨️ 再印刷する受注を選択してください：",
+                    "components": [{"type": 1, "components": buttons}]
+                }
+            }
+
+        elif cmd_name in ("order-print", "印刷"):
             weekdays = ["月", "火", "水", "木", "金", "土", "日"]
             components = []
             lines = []
@@ -497,6 +528,45 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
             return {"type": 6}
 
     return {"type": 4, "data": {"content": "不明なコマンドです。"}}
+
+
+async def _run_show_pending_discord():
+    """直近3日分のメールを取得・解析してから未確定一覧を表示する"""
+    # 直近3日分のメールを取得
+    fetch_res = await fetch_recent_emails(3)
+    new_count = fetch_res.get("new_count", 0)
+
+    # 未確定一覧を取得
+    pending = get_pending_verifications(5)
+
+    if not pending:
+        msg = "📭 未確定の受注はありません。"
+        if new_count > 0:
+            msg += f"（{new_count}件の新規メールを取得しましたが、解析結果がありませんでした）"
+        _send_discord_message(msg)
+        return
+
+    lines_desc = f"📋 未確定の受注が **{len(pending)}件** あります。"
+    if new_count > 0:
+        lines_desc += f"（うち {new_count}件 は今回新たに取得）"
+
+    buttons = []
+    for v in pending:
+        subj = v["subject"][:22] if v["subject"] else "（件名なし）"
+        created_date = v["created_at"][:10] if v["created_at"] else datetime.now().strftime("%Y-%m-%d")
+        buttons.append({
+            "type": 2,
+            "label": f"📋 {subj}",
+            "style": 2,
+            "custom_id": f"preview_verif:{v['verification_id']}:{created_date}"
+        })
+
+    # Discordのボタンは1行5個まで、最大5行
+    rows = []
+    for i in range(0, min(len(buttons), 5), 5):
+        rows.append({"type": 1, "components": buttons[i:i+5]})
+
+    _send_discord_message(lines_desc, components=rows)
 
 
 async def _run_preview_verif_discord(verif_id: str, order_date: str):

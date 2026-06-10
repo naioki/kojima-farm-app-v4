@@ -152,6 +152,25 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
     return order_data
 
 
+async def fetch_recent_emails(days: int = 3) -> Dict[str, Any]:
+    """直近N日分のメールを取得・解析してocr_verificationsに登録する"""
+    from datetime import timedelta
+    today = datetime.now().date()
+    total_new = 0
+    errors = []
+    for i in range(days):
+        target = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        try:
+            res = await fetch_and_parse_for_date(target)
+            if res["success"]:
+                total_new += len(res.get("verifications", []))
+            else:
+                errors.append(f"{target}: {res.get('error','')}")
+        except Exception as e:
+            errors.append(f"{target}: {e}")
+    return {"success": True, "new_count": total_new, "errors": errors}
+
+
 def get_pending_verifications(limit: int = 5) -> List[Dict]:
     """未確定（未承認）のOCR検証レコードを取得する"""
     sb = get_supabase()
