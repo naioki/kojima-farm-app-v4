@@ -205,6 +205,27 @@ def _build_google_chat_preview_card(verif_id: str, subject: str, sender: str, da
 
 # ─── ヘルパー ─────────────────────────────────────────────────────────────
 
+def _build_edit_modal(verif_id: str, order_date: str) -> dict:
+    return {
+        "type": 9,
+        "data": {
+            "title": "注文内容の修正",
+            "custom_id": f"edit_modal:{verif_id}:{order_date}",
+            "components": [{
+                "type": 1,
+                "components": [{
+                    "type": 4,
+                    "custom_id": "notes",
+                    "label": "修正内容を入力",
+                    "style": 2,
+                    "placeholder": "例：\n・1行目の数量を 15箱 に変更\n・レタスを 5箱 0バラ に変更",
+                    "required": True
+                }]
+            }]
+        }
+    }
+
+
 def _send_discord_message(content: str, embeds: list = None, components: list = None):
     """
     ボタン(components)なし → Webhook で送信
@@ -381,25 +402,28 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
             }
 
         elif cmd_name in ("確定済み", "confirmed"):
-            # 確定済み受注の最新3件を表示
+            # 確定済み受注の最新3件を表示（1受注 = 1行: 再印刷 + 修正）
             weekdays = ["月", "火", "水", "木", "金", "土", "日"]
             recent_orders = get_recent_orders(3)
             if not recent_orders:
                 return {"type": 4, "data": {"content": "📭 確定済みの受注がありません。"}}
-            buttons = []
+            components = []
             for o in recent_orders:
                 d = o["order_date"]
                 try:
                     dt = datetime.strptime(d, "%Y-%m-%d")
-                    label = f"🖨️ {dt.strftime('%m/%d')}({weekdays[dt.weekday()]}) {o['line_count']}件"
+                    date_label = f"{dt.strftime('%m/%d')}({weekdays[dt.weekday()]}) {o['line_count']}件"
                 except Exception:
-                    label = f"🖨️ {d} {o['line_count']}件"
-                buttons.append({"type": 2, "label": label, "style": 1, "custom_id": f"print_order:{o['id']}:{d}"})
+                    date_label = f"{d} {o['line_count']}件"
+                components.append({"type": 1, "components": [
+                    {"type": 2, "label": f"🖨️ {date_label}", "style": 1, "custom_id": f"print_order:{o['id']}:{d}"},
+                    {"type": 2, "label": "✏️ 修正", "style": 2, "custom_id": f"edit_confirmed:{o['id']}:{d}"},
+                ]})
             return {
                 "type": 4,
                 "data": {
-                    "content": "🖨️ 再印刷する受注を選択してください：",
-                    "components": [{"type": 1, "components": buttons}]
+                    "content": "確定済みの受注です。再印刷または修正を選択してください：",
+                    "components": components
                 }
             }
 
@@ -487,28 +511,19 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
         elif custom_id.startswith("edit_trigger:"):
             parts = custom_id.split(":")
             _, verif_id, order_date = parts[0], parts[1], parts[2]
-            return {
-                "type": 9,
-                "data": {
-                    "title": "注文内容の修正",
-                    "custom_id": f"edit_modal:{verif_id}:{order_date}",
-                    "components": [
-                        {
-                            "type": 1,
-                            "components": [
-                                {
-                                    "type": 4,
-                                    "custom_id": "notes",
-                                    "label": "修正内容を入力（例：1行目を15箱に変更）",
-                                    "style": 2,
-                                    "placeholder": "例：\n・1行目の数量を 15箱 に変更\n・レタスを 5箱 0バラ に変更",
-                                    "required": True
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
+            return _build_edit_modal(verif_id, order_date)
+
+        elif custom_id.startswith("edit_confirmed:"):
+            # 確定済み受注の修正：order_id から verification_id を引いてモーダルを表示
+            parts = custom_id.split(":")
+            _, order_id, order_date = parts[0], parts[1], parts[2]
+            from app.services.supabase_client import get_supabase
+            sb = get_supabase()
+            verif_rows = sb.table("ocr_verifications").select("id").eq("order_id", order_id).limit(1).execute()
+            if not verif_rows.data:
+                return {"type": 4, "data": {"content": "❌ この受注の元データが見つかりません（手動入力の受注は修正できません）。"}}
+            verif_id = verif_rows.data[0]["id"]
+            return _build_edit_modal(verif_id, order_date)
 
     # ─── 7. モーダル送信（type=5） ───────────────────────────────────────────
     elif interaction_type == 5:
