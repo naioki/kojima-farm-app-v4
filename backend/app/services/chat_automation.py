@@ -280,7 +280,7 @@ async def queue_print_for_existing_order(order_id: str, order_date: str) -> Dict
             "order_id": order_id,
             "pdf_url": pdf_url,
             "status": "pending",
-        }).select("id").execute()
+        }).execute()
         job_id = job_row.data[0]["id"]
     except Exception as e:
         return {"success": False, "error": f"印刷キュー登録失敗: {e}"}
@@ -557,7 +557,7 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
             "order_id": order_id,
             "pdf_url": pdf_url,
             "status": "pending",
-        }).select("id").execute()
+        }).execute()
 
         job_id = job_row.data[0]["id"]
     except Exception as e:
