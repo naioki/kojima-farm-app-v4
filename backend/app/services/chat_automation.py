@@ -152,6 +152,36 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
     return order_data
 
 
+def get_pending_verifications(limit: int = 5) -> List[Dict]:
+    """未確定（未承認）のOCR検証レコードを取得する"""
+    sb = get_supabase()
+    try:
+        rows = (
+            sb.table("ocr_verifications")
+            .select("id, status, parsed_lines, confidence_flags, created_at")
+            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .neq("status", "corrected")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        result = []
+        for r in (rows.data or []):
+            flags = r.get("confidence_flags") or {}
+            result.append({
+                "verification_id": r["id"],
+                "subject": flags.get("subject", "（件名なし）"),
+                "from": flags.get("from", ""),
+                "lines": r.get("parsed_lines") or [],
+                "status": r.get("status", ""),
+                "created_at": r.get("created_at", ""),
+            })
+        return result
+    except Exception as e:
+        print(f"[get_pending_verifications] error: {e}")
+        return []
+
+
 def get_recent_orders(limit: int = 3) -> List[Dict]:
     """DBから最新の確定済み受注を取得する"""
     sb = get_supabase()

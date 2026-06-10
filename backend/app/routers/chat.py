@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, BackgroundTasks, Header, Request, Response, HTTPException
 from pydantic import BaseModel
 
-from app.services.chat_automation import fetch_and_parse_for_date, approve_and_queue_print, get_recent_orders, queue_print_for_existing_order
+from app.services.chat_automation import fetch_and_parse_for_date, approve_and_queue_print, get_recent_orders, queue_print_for_existing_order, get_pending_verifications
 
 router = APIRouter()
 
@@ -353,35 +353,54 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
         cmd_name = cmd_data.get("name")
 
         if cmd_name in ("order-print", "印刷"):
-            # 最新3件の確定済み受注をボタン表示
-            recent_orders = get_recent_orders(3)
-            if not recent_orders:
-                return {
-                    "type": 4,
-                    "data": {"content": "📭 確定済みの受注データがありません。"}
-                }
-
             weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-            buttons = []
-            for o in recent_orders:
-                d = o["order_date"]
-                try:
-                    dt = datetime.strptime(d, "%Y-%m-%d")
-                    label = f"{dt.strftime('%m/%d')}({weekdays[dt.weekday()]}) {o['line_count']}件"
-                except Exception:
-                    label = f"{d} {o['line_count']}件"
-                buttons.append({
-                    "type": 2,
-                    "label": label,
-                    "style": 1,
-                    "custom_id": f"print_order:{o['id']}:{d}"
-                })
+            components = []
+            lines = []
 
-            components = [{"type": 1, "components": buttons}]
+            # ── 未確定の受注 ──
+            pending = get_pending_verifications(3)
+            if pending:
+                lines.append("📋 **未確定の受注**（タップして確認・承認）")
+                pending_buttons = []
+                for v in pending:
+                    subj = v["subject"][:20] if v["subject"] else "（件名なし）"
+                    # created_at から日付を抽出（承認時のデフォルト日付として使用）
+                    created_date = v["created_at"][:10] if v["created_at"] else datetime.now().strftime("%Y-%m-%d")
+                    pending_buttons.append({
+                        "type": 2,
+                        "label": f"📋 {subj}",
+                        "style": 2,
+                        "custom_id": f"preview_verif:{v['verification_id']}:{created_date}"
+                    })
+                components.append({"type": 1, "components": pending_buttons})
+
+            # ── 確定済みの再印刷 ──
+            recent_orders = get_recent_orders(3)
+            if recent_orders:
+                lines.append("🖨️ **確定済みを再印刷**")
+                print_buttons = []
+                for o in recent_orders:
+                    d = o["order_date"]
+                    try:
+                        dt = datetime.strptime(d, "%Y-%m-%d")
+                        label = f"🖨️ {dt.strftime('%m/%d')}({weekdays[dt.weekday()]}) {o['line_count']}件"
+                    except Exception:
+                        label = f"🖨️ {d} {o['line_count']}件"
+                    print_buttons.append({
+                        "type": 2,
+                        "label": label,
+                        "style": 1,
+                        "custom_id": f"print_order:{o['id']}:{d}"
+                    })
+                components.append({"type": 1, "components": print_buttons})
+
+            if not components:
+                return {"type": 4, "data": {"content": "📭 受注データがありません。"}}
+
             return {
                 "type": 4,
                 "data": {
-                    "content": "🖨️ 印刷する受注を選択してください：",
+                    "content": "\n".join(lines) or "受注を選択してください：",
                     "components": components
                 }
             }
@@ -394,6 +413,13 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
             parts = custom_id.split(":")
             _, verif_id, order_date = parts[0], parts[1], parts[2]
             background_tasks.add_task(_run_approve_and_queue_print_discord, verif_id, order_date, user_id)
+            return {"type": 6}
+
+        elif custom_id.startswith("preview_verif:"):
+            parts = custom_id.split(":")
+            _, verif_id, order_date = parts[0], parts[1], parts[2]
+            # 未確定受注のプレビューをボタン付きで返す
+            background_tasks.add_task(_run_preview_verif_discord, verif_id, order_date)
             return {"type": 6}
 
         elif custom_id.startswith("print_order:"):
@@ -451,6 +477,44 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
             return {"type": 6}
 
     return {"type": 4, "data": {"content": "不明なコマンドです。"}}
+
+
+async def _run_preview_verif_discord(verif_id: str, order_date: str):
+    """未確定verificationの内容をプレビュー表示し、承認ボタンを送る"""
+    from app.services.supabase_client import get_supabase
+    sb = get_supabase()
+    from app.services.chat_automation import _DEFAULT_TENANT_ID as _TID
+    try:
+        row = sb.table("ocr_verifications").select("parsed_lines, confidence_flags, status").eq("id", verif_id).limit(1).execute()
+        if not row.data:
+            _send_discord_message(f"❌ 検証レコードが見つかりません: `{verif_id[:8]}...`")
+            return
+        v = row.data[0]
+        flags = v.get("confidence_flags") or {}
+        subject = flags.get("subject", "（件名なし）")
+        from_addr = flags.get("from", "")
+        lines = v.get("parsed_lines") or []
+    except Exception as e:
+        _send_discord_message(f"❌ データ取得失敗: {e}")
+        return
+
+    lines_desc = ""
+    for line in lines:
+        lines_desc += f"- {line.get('store','')} ➔ {line.get('item','')} {line.get('spec','')} (入数:{line.get('unit',0)}): **{line.get('boxes',0)}箱 {line.get('remainder',0)}バラ**\n"
+
+    embed = {
+        "title": f"📋 未確定受注プレビュー: {subject}",
+        "description": f"送信者: `{from_addr}`\n出荷日: **{order_date}**\n\n**明細:**\n{lines_desc or '明細なし'}",
+        "color": 15105570,
+    }
+    components = [{
+        "type": 1,
+        "components": [
+            {"type": 2, "label": "✅ 確定して印刷する", "style": 3, "custom_id": f"approve:{verif_id}:{order_date}"},
+            {"type": 2, "label": "✏️ 修正する", "style": 2, "custom_id": f"edit_trigger:{verif_id}:{order_date}"},
+        ]
+    }]
+    _send_discord_message("未確定受注の内容を確認してください。", embeds=[embed], components=components)
 
 
 async def _run_print_existing_order_discord(order_id: str, order_date: str):
