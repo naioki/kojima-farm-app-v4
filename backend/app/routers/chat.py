@@ -206,19 +206,39 @@ def _build_google_chat_preview_card(verif_id: str, subject: str, sender: str, da
 # ─── ヘルパー ─────────────────────────────────────────────────────────────
 
 def _send_discord_message(content: str, embeds: list = None, components: list = None):
-    """Discord Webhook経由でメッセージ（またはインタラクティブボタン）を送信"""
-    config = _get_chat_config()
-    url = config["discord_webhook_url"]
-    if not url:
-        print("[Discord Outbound] DISCORD_WEBHOOK_URL is not set")
-        return
-    
+    """
+    ボタン(components)なし → Webhook で送信
+    ボタンあり → Bot Token API で送信（webhookはcomponents非対応）
+    """
+    bot_token = os.environ.get("DISCORD_BOT_TOKEN", "")
+    channel_id = os.environ.get("DISCORD_CHANNEL_ID", "")
+
     payload = {"content": content}
     if embeds:
         payload["embeds"] = embeds
     if components:
         payload["components"] = components
 
+    if components and bot_token and channel_id:
+        # Bot Token API経由（ボタン対応）
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        headers = {
+            "Authorization": f"Bot {bot_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            r = httpx.post(url, json=payload, headers=headers, timeout=10)
+            r.raise_for_status()
+        except Exception as e:
+            print(f"[Discord Bot API] Failed to send message: {e}")
+        return
+
+    # Webhook経由（ボタンなし）
+    config = _get_chat_config()
+    url = config["discord_webhook_url"]
+    if not url:
+        print("[Discord Outbound] DISCORD_WEBHOOK_URL is not set")
+        return
     try:
         r = httpx.post(url, json=payload, timeout=10)
         r.raise_for_status()
