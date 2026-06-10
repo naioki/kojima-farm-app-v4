@@ -604,7 +604,8 @@ async def _run_fetch_and_parse_discord(date_val: str, user_id: str):
 
 async def _run_approve_and_queue_print_discord(verif_id: str, order_date: str, user_id: str):
     _send_discord_message(f"⚙️ 注文 {order_date} を確定し、自動印刷ジョブを登録しています...")
-    res = await approve_and_queue_print(verif_id, order_date, reviewed_by=user_id)
+    # Discord user_id はUUID形式ではないのでNoneを渡しadminプロフィールを使用
+    res = await approve_and_queue_print(verif_id, order_date, reviewed_by=None)
     if res["success"]:
         # 完了通知
         embeds = [
