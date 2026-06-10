@@ -203,32 +203,36 @@ def get_pending_verifications(limit: int = 5) -> List[Dict]:
 
 def get_recent_orders(limit: int = 3) -> List[Dict]:
     """DBから最新の確定済み受注を取得する"""
-    sb = get_supabase()
-    rows = (
-        sb.table("orders")
-        .select("id, order_date, status, notes")
-        .eq("tenant_id", _DEFAULT_TENANT_ID)
-        .eq("status", "confirmed")
-        .order("order_date", desc=True)
-        .limit(limit * 3)  # 重複日付を除くため多めに取得
-        .execute()
-    )
-    if not rows.data:
-        return []
+    try:
+        sb = get_supabase()
+        rows = (
+            sb.table("orders")
+            .select("id, order_date, status, notes")
+            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .in_("status", ["verified", "shipped"])
+            .order("order_date", desc=True)
+            .limit(limit * 3)
+            .execute()
+        )
+        print(f"[get_recent_orders] found {len(rows.data) if rows.data else 0} orders")
+        if not rows.data:
+            return []
 
-    seen_dates: set[str] = set()
-    result = []
-    for r in rows.data:
-        d = r["order_date"]
-        if d not in seen_dates:
-            seen_dates.add(d)
-            # 明細数を取得
-            lines_count = sb.table("order_lines").select("id", count="exact").eq("order_id", r["id"]).execute()
-            r["line_count"] = lines_count.count or 0
-            result.append(r)
-        if len(result) >= limit:
-            break
-    return result
+        seen_dates: set[str] = set()
+        result = []
+        for r in rows.data:
+            d = r["order_date"]
+            if d not in seen_dates:
+                seen_dates.add(d)
+                lines_count = sb.table("order_lines").select("id", count="exact").eq("order_id", r["id"]).execute()
+                r["line_count"] = lines_count.count or 0
+                result.append(r)
+            if len(result) >= limit:
+                break
+        return result
+    except Exception as e:
+        print(f"[get_recent_orders] ERROR: {e}")
+        return []
 
 
 async def queue_print_for_existing_order(order_id: str, order_date: str) -> Dict[str, Any]:
