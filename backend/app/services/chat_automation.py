@@ -209,7 +209,7 @@ def get_recent_orders(limit: int = 3) -> List[Dict]:
             sb.table("orders")
             .select("id, order_date, status, notes")
             .eq("tenant_id", _DEFAULT_TENANT_ID)
-            .in_("status", ["verified", "shipped"])
+            .not_.eq("status", "cancelled")
             .order("order_date", desc=True)
             .limit(limit * 3)
             .execute()
