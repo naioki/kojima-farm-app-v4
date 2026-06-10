@@ -205,6 +205,84 @@ def _build_google_chat_preview_card(verif_id: str, subject: str, sender: str, da
 
 # ─── ヘルパー ─────────────────────────────────────────────────────────────
 
+def _build_date_selector(on_prefix: str, other_prefix: str) -> dict:
+    """今日・明日・明後日・その他 の日付選択ボタンを返す"""
+    from datetime import date, timedelta
+    today = date.today()
+    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+    buttons = []
+    for i, label in enumerate(["今日", "明日", "明後日"]):
+        d = today + timedelta(days=i)
+        d_str = d.strftime("%Y-%m-%d")
+        day_label = f"{label} ({d.strftime('%m/%d')}({weekdays[d.weekday()]}))"
+        buttons.append({"type": 2, "label": day_label, "style": 1, "custom_id": f"{on_prefix}:{d_str}"})
+    buttons.append({"type": 2, "label": "その他（記入）", "style": 2, "custom_id": other_prefix})
+    return {
+        "type": 4,
+        "data": {
+            "content": "📅 出荷日を選択してください：",
+            "components": [{"type": 1, "components": buttons}]
+        }
+    }
+
+
+def _build_date_modal(modal_custom_id: str) -> dict:
+    """日付を手入力するモーダルを返す"""
+    return {
+        "type": 9,
+        "data": {
+            "title": "出荷日を入力",
+            "custom_id": modal_custom_id,
+            "components": [{
+                "type": 1,
+                "components": [{
+                    "type": 4,
+                    "custom_id": "date_input",
+                    "label": "出荷日（例：2026-06-15 または 6/15）",
+                    "style": 1,
+                    "placeholder": "2026-06-15",
+                    "required": True,
+                    "min_length": 4,
+                    "max_length": 10
+                }]
+            }]
+        }
+    }
+
+
+def _extract_modal_date(body: dict) -> str | None:
+    """モーダル送信から日付文字列を解析して YYYY-MM-DD 形式で返す"""
+    raw = ""
+    for row in body.get("data", {}).get("components", []):
+        for comp in row.get("components", []):
+            if comp.get("custom_id") == "date_input":
+                raw = comp.get("value", "").strip()
+    if not raw:
+        return None
+    try:
+        # 既に YYYY-MM-DD 形式
+        datetime.strptime(raw, "%Y-%m-%d")
+        return raw
+    except ValueError:
+        pass
+    # M/D または MM/DD 形式
+    for fmt in ("%m/%d", "%-m/%-d"):
+        try:
+            d = datetime.strptime(raw, fmt)
+            year = datetime.now().year
+            return f"{year}-{d.month:02d}-{d.day:02d}"
+        except ValueError:
+            continue
+    # ハイフンなし MMDD
+    try:
+        if len(raw) == 4 and raw.isdigit():
+            d = datetime.strptime(raw, "%m%d")
+            return f"{datetime.now().year}-{d.month:02d}-{d.day:02d}"
+    except ValueError:
+        pass
+    return None
+
+
 def _build_edit_modal(verif_id: str, order_date: str) -> dict:
     return {
         "type": 9,
@@ -486,22 +564,39 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
 
         if custom_id.startswith("approve:"):
             parts = custom_id.split(":")
+            _, verif_id, _ = parts[0], parts[1], parts[2]
+            return _build_date_selector(f"approve_on:{verif_id}", f"approve_other:{verif_id}")
+
+        elif custom_id.startswith("approve_on:"):
+            parts = custom_id.split(":")
             _, verif_id, order_date = parts[0], parts[1], parts[2]
             background_tasks.add_task(_run_approve_and_queue_print_discord, verif_id, order_date, user_id)
             return {"type": 6}
 
+        elif custom_id.startswith("approve_other:"):
+            _, verif_id = custom_id.split(":", 1)
+            return _build_date_modal(f"date_approve_modal:{verif_id}")
+
         elif custom_id.startswith("preview_verif:"):
             parts = custom_id.split(":")
             _, verif_id, order_date = parts[0], parts[1], parts[2]
-            # 未確定受注のプレビューをボタン付きで返す
             background_tasks.add_task(_run_preview_verif_discord, verif_id, order_date)
             return {"type": 6}
 
         elif custom_id.startswith("print_order:"):
             parts = custom_id.split(":")
+            _, order_id, _ = parts[0], parts[1], parts[2]
+            return _build_date_selector(f"print_on:{order_id}", f"print_other:{order_id}")
+
+        elif custom_id.startswith("print_on:"):
+            parts = custom_id.split(":")
             _, order_id, order_date = parts[0], parts[1], parts[2]
             background_tasks.add_task(_run_print_existing_order_discord, order_id, order_date)
             return {"type": 6}
+
+        elif custom_id.startswith("print_other:"):
+            _, order_id = custom_id.split(":", 1)
+            return _build_date_modal(f"date_print_modal:{order_id}")
 
         elif custom_id.startswith("select_date:"):
             _, order_date = custom_id.split(":")
@@ -537,9 +632,24 @@ async def discord_webhook(request: Request, background_tasks: BackgroundTasks):
                 for comp in row.get("components", []):
                     if comp.get("custom_id") == "notes":
                         notes = comp.get("value", "")
-
             _send_discord_message(f"⚙️ 注文データを修正しています（指示: 「{notes}」）...")
             background_tasks.add_task(_run_edit_and_preview_discord, verif_id, order_date, notes)
+            return {"type": 6}
+
+        elif custom_id.startswith("date_approve_modal:"):
+            _, verif_id = custom_id.split(":", 1)
+            order_date = _extract_modal_date(body)
+            if not order_date:
+                return {"type": 4, "data": {"content": "❌ 日付の形式が正しくありません（例：2026-06-15 または 6/15）。"}}
+            background_tasks.add_task(_run_approve_and_queue_print_discord, verif_id, order_date, user_id)
+            return {"type": 6}
+
+        elif custom_id.startswith("date_print_modal:"):
+            _, order_id = custom_id.split(":", 1)
+            order_date = _extract_modal_date(body)
+            if not order_date:
+                return {"type": 4, "data": {"content": "❌ 日付の形式が正しくありません（例：2026-06-15 または 6/15）。"}}
+            background_tasks.add_task(_run_print_existing_order_discord, order_id, order_date)
             return {"type": 6}
 
     return {"type": 4, "data": {"content": "不明なコマンドです。"}}
