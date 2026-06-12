@@ -20,6 +20,7 @@ export type OrderLine = {
   customer_name: string
   product_name: string
   spec: string
+  sort_order: number
 }
 
 export type Order = {
@@ -154,8 +155,8 @@ export async function getOrderDetail(orderId: string): Promise<ActionResult<Orde
       .from('order_lines')
       .select(`
         id, customer_id, product_standard_id, boxes, remainder, total_qty, unit_price, line_total,
-        customers!inner(name),
-        product_standards!inner(name, products!inner(name))
+        customers!inner(name, sort_order),
+        product_standards!inner(name, unit_size, products!inner(name))
       `)
       .eq('order_id', orderId)
 
@@ -165,22 +166,27 @@ export async function getOrderDetail(orderId: string): Promise<ActionResult<Orde
     }
 
     const mappedLines: OrderLine[] = (lines ?? []).map((l: Record<string, unknown>) => {
-      const customer = l.customers as { name: string } | null
-      const ps = l.product_standards as { name: string; products: { name: string } } | null
+      const customer = l.customers as { name: string; sort_order: number | null } | null
+      const ps = l.product_standards as { name: string; unit_size: number; products: { name: string } } | null
+      const boxes = (l.boxes as number) || 0
+      const remainder = (l.remainder as number) || 0
+      const unitSize = ps?.unit_size || 0
       return {
         id: l.id as string,
         customer_id: l.customer_id as string,
         product_standard_id: l.product_standard_id as string,
-        boxes: l.boxes as number,
-        remainder: l.remainder as number,
-        total_qty: l.total_qty as number,
+        boxes,
+        remainder,
+        total_qty: (l.total_qty as number) || (boxes * unitSize + remainder),
         unit_price: l.unit_price as number | null,
         line_total: l.line_total as number | null,
         customer_name: customer?.name ?? '—',
         product_name: ps?.products?.name ?? '—',
         spec: ps?.name ?? '—',
+        sort_order: customer?.sort_order ?? 999,
       }
     })
+    mappedLines.sort((a, b) => (a.sort_order - b.sort_order) || a.customer_name.localeCompare(b.customer_name))
 
     return {
       success: true,

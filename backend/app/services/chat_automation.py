@@ -120,9 +120,11 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
     ps_ids       = list({lr["product_standard_id"] for lr in lines_rows.data if lr.get("product_standard_id")})
 
     customers = {}
+    customer_sort = {}
     if customer_ids:
-        c_rows = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
+        c_rows = sb.table("customers").select("id, name, sort_order").in_("id", customer_ids).execute()
         customers = {r["id"]: r["name"] for r in (c_rows.data or [])}
+        customer_sort = {r["id"]: r.get("sort_order") or 999 for r in (c_rows.data or [])}
 
     ps_map = {}
     if ps_ids:
@@ -139,8 +141,10 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
     order_data = []
     for lr in lines_rows.data:
         ps = ps_map.get(lr.get("product_standard_id", ""), {})
+        cid = lr.get("customer_id", "")
         order_data.append({
-            "store": customers.get(lr.get("customer_id", ""), ""),
+            "store": customers.get(cid, ""),
+            "_sort": customer_sort.get(cid, 999),
             "item": ps.get("product_name", ""),
             "spec": ps.get("spec", ""),
             "unit": ps.get("unit_size", 0),
@@ -149,6 +153,7 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
             "remainder": lr["remainder"],
             "total_qty": lr["total_qty"],
         })
+    order_data.sort(key=lambda x: (x.pop("_sort"), x.get("item", "")))
     return order_data
 
 

@@ -57,6 +57,7 @@ const schema = z.object({
   name: z.string().min(1, "顧客名を入力してください").max(100),
   store_code: z.string().max(20).optional(),
   is_active: z.boolean().default(true),
+  sort_order: z.coerce.number().int().min(1).max(999).default(999).optional(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -76,7 +77,7 @@ function CustomerForm({
 }) {
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { name: "", store_code: "", is_active: true, ...defaultValues },
+    defaultValues: { name: "", store_code: "", is_active: true, sort_order: 999, ...defaultValues },
   });
 
   return (
@@ -103,6 +104,19 @@ function CustomerForm({
               <FormLabel>店舗コード</FormLabel>
               <FormControl>
                 <Input placeholder="例: S001" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="sort_order"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>配送順（数字が小さいほど先）</FormLabel>
+              <FormControl>
+                <Input type="number" min={1} max={999} placeholder="例: 1" {...field} />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -194,6 +208,7 @@ export function CustomersTab({ customers: initial }: CustomersTabProps) {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-12 text-center">配送順</TableHead>
               <TableHead>顧客名</TableHead>
               <TableHead>店舗コード</TableHead>
               <TableHead>ステータス</TableHead>
@@ -203,13 +218,18 @@ export function CustomersTab({ customers: initial }: CustomersTabProps) {
           <TableBody>
             {customers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                   顧客データがありません
                 </TableCell>
               </TableRow>
             ) : (
               customers.map((customer) => (
                 <TableRow key={customer.id}>
+                  <TableCell className="text-center font-mono text-sm text-muted-foreground">
+                    {(customer as Customer & { sort_order?: number }).sort_order !== 999
+                      ? (customer as Customer & { sort_order?: number }).sort_order ?? "—"
+                      : "—"}
+                  </TableCell>
                   <TableCell className="font-medium">{customer.name}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {customer.store_code ?? "—"}
@@ -245,6 +265,7 @@ export function CustomersTab({ customers: initial }: CustomersTabProps) {
                               name: customer.name,
                               store_code: customer.store_code ?? "",
                               is_active: customer.is_active,
+                              sort_order: (customer as Customer & { sort_order?: number }).sort_order ?? 999,
                             }}
                             onSubmit={handleUpdate}
                             isPending={isPending}

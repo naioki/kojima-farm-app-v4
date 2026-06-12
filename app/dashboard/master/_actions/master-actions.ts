@@ -55,6 +55,7 @@ const CustomerSchema = z.object({
   name: z.string().min(1, "顧客名を入力してください").max(100),
   store_code: z.string().max(20).nullable().optional(),
   is_active: z.boolean().default(true),
+  sort_order: z.number().int().min(1).max(999).default(999).optional(),
 });
 
 export type CustomerInput = z.infer<typeof CustomerSchema>;
@@ -69,6 +70,7 @@ export async function getCustomers(): Promise<ActionResult<Customer[]>> {
       .from("customers")
       .select("*")
       .eq("tenant_id", profile.tenant_id)
+      .order("sort_order", { ascending: true, nullsFirst: false })
       .order("name");
 
     if (error) {
