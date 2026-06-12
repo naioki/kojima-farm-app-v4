@@ -19,16 +19,25 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
 
-    const supabase = createClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-
-    if (error) {
-      setError('メールアドレスまたはパスワードが正しくありません。')
+    try {
+      const supabase = createClient()
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 15000)
+      )
+      const { error } = await Promise.race([
+        supabase.auth.signInWithPassword({ email, password }),
+        timeout,
+      ])
+      if (error) {
+        setError('メールアドレスまたはパスワードが正しくありません。')
+      } else {
+        window.location.href = '/dashboard/verifications'
+      }
+    } catch {
+      setError('タイムアウトしました。時間をおいて再度お試しください。')
+    } finally {
       setLoading(false)
-      return
     }
-
-    window.location.href = '/dashboard/verifications'
   }
 
   async function handleReset(e: React.FormEvent) {
