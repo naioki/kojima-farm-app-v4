@@ -177,6 +177,7 @@ export type Database = {
           store_code: string | null
           is_active: boolean
           created_at: string
+          sort_order: number | null
         }
         Insert: {
           id?: string
@@ -185,6 +186,7 @@ export type Database = {
           store_code?: string | null
           is_active?: boolean
           created_at?: string
+          sort_order?: number | null
         }
         Update: {
           id?: string
@@ -193,6 +195,7 @@ export type Database = {
           store_code?: string | null
           is_active?: boolean
           created_at?: string
+          sort_order?: number | null
         }
         Relationships: [
           {
