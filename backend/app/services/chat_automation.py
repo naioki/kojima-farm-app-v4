@@ -122,9 +122,12 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
     customers = {}
     customer_sort = {}
     if customer_ids:
-        c_rows = sb.table("customers").select("id, name, sort_order").in_("id", customer_ids).execute()
+        try:
+            c_rows = sb.table("customers").select("id, name, sort_order").in_("id", customer_ids).execute()
+            customer_sort = {r["id"]: r.get("sort_order") or 999 for r in (c_rows.data or [])}
+        except Exception:
+            c_rows = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
         customers = {r["id"]: r["name"] for r in (c_rows.data or [])}
-        customer_sort = {r["id"]: r.get("sort_order") or 999 for r in (c_rows.data or [])}
 
     ps_map = {}
     if ps_ids:
