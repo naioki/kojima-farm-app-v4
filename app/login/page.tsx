@@ -36,17 +36,27 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
 
-    const supabase = createClient()
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/login`,
-    })
-
-    setLoading(false)
-    if (error) {
-      setError('リセットメールの送信に失敗しました。メールアドレスを確認してください。')
-      return
+    try {
+      const supabase = createClient()
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 10000)
+      )
+      const { error } = await Promise.race([
+        supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/login`,
+        }),
+        timeout,
+      ])
+      if (error) {
+        setError('リセットメールの送信に失敗しました。メールアドレスを確認してください。')
+      } else {
+        setResetSent(true)
+      }
+    } catch {
+      setError('タイムアウトまたはエラーが発生しました。再度お試しください。')
+    } finally {
+      setLoading(false)
     }
-    setResetSent(true)
   }
 
   if (resetMode) {
