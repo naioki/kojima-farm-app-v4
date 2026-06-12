@@ -28,8 +28,7 @@ export default function LoginPage() {
       return
     }
 
-    router.push('/dashboard/verifications')
-    router.refresh()
+    window.location.href = '/dashboard/verifications'
   }
 
   async function handleReset(e: React.FormEvent) {
