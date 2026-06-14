@@ -92,7 +92,7 @@ function SpecSelector({
             }
           }}
         >
-          <SelectTrigger className="h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2 w-full">
+          <SelectTrigger className="min-h-7 h-auto text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2 w-full [&>span]:whitespace-normal [&>span]:break-all [&>span]:text-left">
             <SelectValue placeholder="規格" />
           </SelectTrigger>
           <SelectContent>
@@ -397,8 +397,8 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                 <tr>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-8">#</th>
                   <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[90px]">店舗</th>
-                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[90px]">品目</th>
-                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[70px]">規格</th>
+                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[80px] max-w-[110px]">品目</th>
+                  <th className="px-2 py-2 text-left font-semibold text-muted-foreground min-w-[60px] max-w-[90px]">規格</th>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">入数</th>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">箱</th>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-14">バラ</th>
@@ -453,7 +453,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                       </td>
 
                       {/* 品目 ▼ ドロップダウン */}
-                      <td className="px-1 py-0.5">
+                      <td className="px-1 py-0.5 max-w-[110px]">
                         <Controller
                           control={form.control}
                           name={`lines.${idx}.item`}
@@ -478,7 +478,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                               }}
                             >
                               <SelectTrigger className={cn(
-                                "h-7 text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2 w-full",
+                                "min-h-7 h-auto text-xs border-transparent bg-transparent focus:bg-background focus:border-input px-2 w-full [&>span]:whitespace-normal [&>span]:break-all [&>span]:text-left",
                                 itemErr && "border-destructive"
                               )}>
                                 <SelectValue placeholder="品目" />
@@ -494,7 +494,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                       </td>
 
                       {/* 規格 ▼ 品目連動ドロップダウン */}
-                      <td className="px-1 py-0.5">
+                      <td className="px-1 py-0.5 max-w-[90px]">
                         <SpecSelector
                           control={form.control}
                           idx={idx}
