@@ -294,6 +294,7 @@ export async function approveOcrVerification(
 // ─── マスターデータ取得 ────────────────────────────────────────────────
 export type MasterData = {
   stores: string[]
+  storeOrder: Record<string, number>  // 店舗名 → sort_order
   products: { id: string; name: string }[]
   specs: { productId: string; name: string; unitSize: number }[]
 }
@@ -312,11 +313,16 @@ export async function fetchMasterData(): Promise<ActionResult<MasterData>> {
     // 店舗（customers）
     const { data: customers } = await supabase
       .from('customers')
-      .select('name')
+      .select('name, sort_order')
       .eq('tenant_id', tenantId)
       .eq('is_active', true)
+      .order('sort_order', { ascending: true, nullsFirst: false })
       .order('name')
     const stores = (customers ?? []).map((c) => c.name as string)
+    const storeOrder: Record<string, number> = {}
+    ;(customers ?? []).forEach((c, i) => {
+      storeOrder[c.name as string] = (c.sort_order as number | null) ?? 999
+    })
 
     // 品目（products）
     const { data: products } = await supabase
@@ -356,7 +362,7 @@ export async function fetchMasterData(): Promise<ActionResult<MasterData>> {
 
     return {
       success: true,
-      data: { stores, products: uniqueProducts, specs },
+      data: { stores, storeOrder, products: uniqueProducts, specs },
     }
   } catch (err) {
     console.error('[fetchMasterData] エラー:', err)

@@ -5,7 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { useState, useTransition, useEffect, useCallback } from "react";
 import {
-  Plus, Trash2, CheckCircle, Loader2, Sparkles, Download, AlertTriangle, ArrowUpDown,
+  Plus, Trash2, CheckCircle, Loader2, Sparkles, Download, AlertTriangle,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -133,28 +133,24 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
   const [confirmOpen,  setConfirmOpen]  = useState(false);
   const [approvedOrderId, setApprovedOrderId] = useState<string | null>(null);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
-  const [reverseStoreOrder, setReverseStoreOrder] = useState(false);
-
-  useEffect(() => {
-    setReverseStoreOrder(localStorage.getItem("reverseStoreOrder") === "true");
-  }, []);
-
-  function toggleReverse() {
-    setReverseStoreOrder((prev) => {
-      localStorage.setItem("reverseStoreOrder", String(!prev));
-      return !prev;
-    });
-  }
 
   const tomorrow = new Date(Date.now() + 86400000).toISOString().split("T")[0];
+
+  const sortedInitialLines = verification.parsed_lines.length > 0
+    ? [...verification.parsed_lines]
+        .map(buildDefaultLine)
+        .sort((a, b) => {
+          const aOrd = masterData.storeOrder[a.store] ?? 999;
+          const bOrd = masterData.storeOrder[b.store] ?? 999;
+          return aOrd !== bOrd ? aOrd - bOrd : a.store.localeCompare(b.store, "ja");
+        })
+    : [{ store: "", item: "", spec: "", unit: 0, boxes: 0, remainder: 0 }];
 
   const form = useForm<HumanForm>({
     resolver: zodResolver(HumanFormSchema),
     defaultValues: {
       order_date: tomorrow,
-      lines: verification.parsed_lines.length > 0
-        ? verification.parsed_lines.map(buildDefaultLine)
-        : [{ store: "", item: "", spec: "", unit: 0, boxes: 0, remainder: 0 }],
+      lines: sortedInitialLines,
       correction_notes: "",
     },
   });
@@ -225,7 +221,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
     if (!id) return;
     setIsPdfLoading(true);
     try {
-      const blob = await fetchPdfBlob(id, reverseStoreOrder);
+      const blob = await fetchPdfBlob(id);
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement("a");
       a.href     = url;
@@ -336,20 +332,6 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
             </Badge>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleReverse}
-              className={cn(
-                "h-7 px-2 rounded text-[11px] flex items-center gap-1 border transition-colors",
-                reverseStoreOrder
-                  ? "bg-blue-600 text-white border-blue-600 hover:bg-blue-700"
-                  : "bg-background text-muted-foreground border-input hover:text-foreground"
-              )}
-              title="店舗順を逆にする"
-            >
-              <ArrowUpDown className="h-3 w-3" />
-              店舗逆順：{reverseStoreOrder ? "ON" : "OFF"}
-            </button>
             <Button
               type="button"
               variant="outline"
@@ -590,49 +572,29 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
         </CardFooter>
       </form>
 
-      {/* 承認確認ダイアログ */}
+      {/* 承認確認ダイアログ — 日付確認 */}
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent className="max-w-lg">
+        <AlertDialogContent className="max-w-sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>受注内容の最終確認</AlertDialogTitle>
+            <AlertDialogTitle className="text-center text-lg">受注日の確認</AlertDialogTitle>
             <AlertDialogDescription asChild>
-              <div className="space-y-3 text-sm">
-                <p className="text-muted-foreground">
-                  以下の内容で受注を登録し、出荷ラベル PDF を発行します。
-                  この操作は取り消せません。
+              <div className="text-center space-y-4 pt-2">
+                <p className="text-muted-foreground text-sm">
+                  この日付で受注登録・PDF発行してよいですか？
                 </p>
-                <div className="rounded-lg border bg-muted/30 overflow-hidden">
-                  <div className="px-3 py-2 bg-muted/60 flex items-center gap-2 border-b">
-                    <span className="text-xs font-semibold">
-                      受注日: {form.getValues("order_date")}
-                    </span>
-                    <Badge variant="outline" className="text-[10px] ml-auto">
-                      {form.getValues("lines").length} 明細
-                    </Badge>
-                  </div>
-                  <div className="max-h-44 overflow-auto divide-y">
-                    {form.getValues("lines").map((line, i) => {
-                      const total = (line.unit || 0) * (line.boxes || 0) + (line.remainder || 0);
-                      return (
-                        <div key={i} className="px-3 py-1.5 flex items-center gap-2 text-xs">
-                          <span className="font-medium w-20 truncate text-foreground">{line.store || "—"}</span>
-                          <span className="text-muted-foreground flex-1 truncate">
-                            {line.item}{line.spec ? ` (${line.spec})` : ""}
-                          </span>
-                          <span className="font-mono text-xs shrink-0">
-                            {line.boxes}箱{line.remainder > 0 ? `+${line.remainder}` : ""}
-                            <span className="text-muted-foreground ml-1">= {total}</span>
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
+                <div className="rounded-xl border-2 border-primary/30 bg-primary/5 py-4 px-6 inline-block">
+                  <p className="text-2xl font-bold tracking-wide text-foreground">
+                    {form.getValues("order_date")}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {form.getValues("lines").length} 明細
+                  </p>
                 </div>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isPending}>キャンセル</AlertDialogCancel>
+          <AlertDialogFooter className="sm:justify-center gap-3 pt-2">
+            <AlertDialogCancel disabled={isPending}>日付を修正する</AlertDialogCancel>
             <AlertDialogAction
               className="bg-green-600 hover:bg-green-700"
               disabled={isPending}
@@ -640,7 +602,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
             >
               {isPending
                 ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />処理中...</>
-                : "承認する"
+                : "この日付で承認する"
               }
             </AlertDialogAction>
           </AlertDialogFooter>
