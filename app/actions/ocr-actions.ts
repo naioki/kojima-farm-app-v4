@@ -76,7 +76,9 @@ async function _getAuthProfile() {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return { error: 'ログインが必要です。再度ログインしてください。' } as const
-  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single()
+  // RLSの循環依存を避けるためサービスクライアントでプロファイルを取得
+  const sb = await createServiceClient()
+  const { data: profile } = await sb.from('profiles').select('*').eq('id', user.id).single()
   if (!profile || profile.role !== 'admin') return { error: 'この操作には管理者権限が必要です。' } as const
   const tenantId = profile.tenant_id ?? ''
   return { supabase, profile, tenantId }

@@ -91,7 +91,8 @@ async function _getAuthProfile() {
   const supabase = await createClient()
   const { data: { user }, error } = await supabase.auth.getUser()
   if (error || !user) return { error: 'ログインが必要です。' } as const
-  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single()
+  const sb = await createServiceClient()
+  const { data: profile } = await sb.from('profiles').select('*').eq('id', user.id).single()
   if (!profile) return { error: 'プロフィールが見つかりません。' } as const
   const tenantId = profile.tenant_id ?? ''
   return { supabase, profile, tenantId }

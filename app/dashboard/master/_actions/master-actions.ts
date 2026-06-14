@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceClient } from "@/lib/supabase/server";
 import type {
   Database,
   CustomerRow,
@@ -36,7 +36,8 @@ async function getAdminClient(): Promise<AdminClientError | AdminClientSuccess> 
   if (authError || !user) {
     return { error: "ログインが必要です。再度ログインしてください。" };
   }
-  const { data: profile } = await supabase
+  const sb = await createServiceClient();
+  const { data: profile } = await sb
     .from("profiles")
     .select("*")
     .eq("id", user.id)
