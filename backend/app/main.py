@@ -24,7 +24,7 @@ app = FastAPI(
 )
 
 # ─── CORS ────────────────────────────────────────────────────────────────────
-# Next.js dev server (3000) and production Vercel domain
+# Next.js dev server (3000), Vercel, and Cloud Run frontend
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://kojima-farm-app-v4.vercel.app",
@@ -33,6 +33,8 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    # Cloud Run のフロントエンドURL（*.run.app の両形式）を許可
+    allow_origin_regex=r"https://kojima-farm-frontend-.*\.run\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
