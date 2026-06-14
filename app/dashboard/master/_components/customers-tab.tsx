@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, Pencil, Trash2, Loader2, Check, X } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, ChevronUp, ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,14 +57,11 @@ const schema = z.object({
   name: z.string().min(1, "顧客名を入力してください").max(100),
   store_code: z.string().max(20).optional(),
   is_active: z.boolean().default(true),
-  sort_order: z.coerce.number().int().min(1).max(999).default(999).optional(),
 });
 
 type FormValues = z.infer<typeof schema>;
 
-interface CustomersTabProps {
-  customers: Customer[];
-}
+type CustomerWithOrder = Customer & { sort_order?: number | null };
 
 function CustomerForm({
   defaultValues,
@@ -77,7 +74,7 @@ function CustomerForm({
 }) {
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { name: "", store_code: "", is_active: true, sort_order: 999, ...defaultValues },
+    defaultValues: { name: "", store_code: "", is_active: true, ...defaultValues },
   });
 
   return (
@@ -109,19 +106,6 @@ function CustomerForm({
             </FormItem>
           )}
         />
-        <FormField
-          control={form.control}
-          name="sort_order"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>配送順（数字が小さいほど先）</FormLabel>
-              <FormControl>
-                <Input type="number" min={1} max={999} placeholder="例: 1" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
         <DialogFooter>
           <Button type="submit" disabled={isPending}>
             {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -133,23 +117,32 @@ function CustomerForm({
   );
 }
 
-export function CustomersTab({ customers: initial }: CustomersTabProps) {
-  const [customers, setCustomers] = useState(initial);
-  const [isPending, startTransition] = useTransition();
+function sortCustomers(list: CustomerWithOrder[]): CustomerWithOrder[] {
+  return [...list].sort((a, b) => {
+    const aOrd = a.sort_order ?? 999;
+    const bOrd = b.sort_order ?? 999;
+    return aOrd !== bOrd ? aOrd - bOrd : a.name.localeCompare(b.name, "ja");
+  });
+}
 
-  // サーバーサイドからのプロップ更新をステートに同期する
-  useEffect(() => {
-    setCustomers(initial);
-  }, [initial]);
-  const [editTarget, setEditTarget] = useState<Customer | null>(null);
+export function CustomersTab({ customers: initial }: { customers: Customer[] }) {
+  const [customers, setCustomers] = useState<CustomerWithOrder[]>(initial as CustomerWithOrder[]);
+  const [isPending, startTransition] = useTransition();
+  const [editTarget, setEditTarget] = useState<CustomerWithOrder | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+
+  useEffect(() => {
+    setCustomers(initial as CustomerWithOrder[]);
+  }, [initial]);
+
+  const sorted = sortCustomers(customers);
 
   function handleCreate(data: FormValues) {
     startTransition(async () => {
-      const result = await createCustomer(data);
+      const result = await createCustomer({ ...data, sort_order: 999 });
       if (result.success) {
-        setCustomers((prev) => [...prev, result.data]);
-        toast.success("顧客を登録しました");
+        setCustomers((prev) => [...prev, result.data as CustomerWithOrder]);
+        toast.success("顧客を登録しました（↑↓ボタンで配送順を調整できます）");
         setCreateOpen(false);
       } else {
         toast.error("登録に失敗しました", { description: result.error });
@@ -160,10 +153,13 @@ export function CustomersTab({ customers: initial }: CustomersTabProps) {
   function handleUpdate(data: FormValues) {
     if (!editTarget) return;
     startTransition(async () => {
-      const result = await updateCustomer(editTarget.id, data);
+      const result = await updateCustomer(editTarget.id, {
+        ...data,
+        sort_order: editTarget.sort_order ?? 999,
+      });
       if (result.success) {
         setCustomers((prev) =>
-          prev.map((c) => (c.id === editTarget.id ? result.data : c))
+          prev.map((c) => (c.id === editTarget.id ? (result.data as CustomerWithOrder) : c))
         );
         toast.success("顧客を更新しました");
         setEditTarget(null);
@@ -181,6 +177,39 @@ export function CustomersTab({ customers: initial }: CustomersTabProps) {
         toast.success("顧客を削除しました");
       } else {
         toast.error("削除に失敗しました", { description: result.error });
+      }
+    });
+  }
+
+  function handleMove(index: number, direction: "up" | "down") {
+    const newIndex = direction === "up" ? index - 1 : index + 1;
+    if (newIndex < 0 || newIndex >= sorted.length) return;
+
+    // Normalize all sort_orders to 1, 2, 3… then swap the two positions
+    const normalized = sorted.map((c, i) => ({ ...c, sort_order: i + 1 }));
+    const tmp = normalized[index].sort_order;
+    normalized[index] = { ...normalized[index], sort_order: normalized[newIndex].sort_order };
+    normalized[newIndex] = { ...normalized[newIndex], sort_order: tmp };
+
+    const a = normalized[index];
+    const b = normalized[newIndex];
+
+    // Optimistic local update
+    setCustomers((prev) =>
+      prev.map((c) => {
+        const n = normalized.find((x) => x.id === c.id);
+        return n ? { ...c, sort_order: n.sort_order } : c;
+      })
+    );
+
+    startTransition(async () => {
+      const [ra, rb] = await Promise.all([
+        updateCustomer(a.id, { sort_order: a.sort_order }),
+        updateCustomer(b.id, { sort_order: b.sort_order }),
+      ]);
+      if (!ra.success || !rb.success) {
+        toast.error("並び順の変更に失敗しました");
+        setCustomers(initial as CustomerWithOrder[]);
       }
     });
   }
@@ -208,7 +237,7 @@ export function CustomersTab({ customers: initial }: CustomersTabProps) {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-12 text-center">配送順</TableHead>
+              <TableHead className="w-28 text-center">配送順</TableHead>
               <TableHead>顧客名</TableHead>
               <TableHead>店舗コード</TableHead>
               <TableHead>ステータス</TableHead>
@@ -216,19 +245,41 @@ export function CustomersTab({ customers: initial }: CustomersTabProps) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {customers.length === 0 ? (
+            {sorted.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                   顧客データがありません
                 </TableCell>
               </TableRow>
             ) : (
-              customers.map((customer) => (
+              sorted.map((customer, index) => (
                 <TableRow key={customer.id}>
-                  <TableCell className="text-center font-mono text-sm text-muted-foreground">
-                    {(customer as Customer & { sort_order?: number }).sort_order !== 999
-                      ? (customer as Customer & { sort_order?: number }).sort_order ?? "—"
-                      : "—"}
+                  <TableCell className="text-center">
+                    <div className="flex items-center justify-center gap-0.5">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        disabled={index === 0 || isPending}
+                        onClick={() => handleMove(index, "up")}
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" />
+                        <span className="sr-only">上へ</span>
+                      </Button>
+                      <span className="text-sm text-muted-foreground w-5 text-center select-none">
+                        {index + 1}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        disabled={index === sorted.length - 1 || isPending}
+                        onClick={() => handleMove(index, "down")}
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                        <span className="sr-only">下へ</span>
+                      </Button>
+                    </div>
                   </TableCell>
                   <TableCell className="font-medium">{customer.name}</TableCell>
                   <TableCell className="text-muted-foreground">
@@ -265,7 +316,6 @@ export function CustomersTab({ customers: initial }: CustomersTabProps) {
                               name: customer.name,
                               store_code: customer.store_code ?? "",
                               is_active: customer.is_active,
-                              sort_order: (customer as Customer & { sort_order?: number }).sort_order ?? 999,
                             }}
                             onSubmit={handleUpdate}
                             isPending={isPending}
