@@ -21,7 +21,7 @@ export default async function VerificationsPage() {
     );
   }
 
-  const masterData = masterResult.success ? masterResult.data : { stores: [], products: [], specs: [] };
+  const masterData = masterResult.success ? masterResult.data : { stores: [], storeOrder: {}, products: [], specs: [] };
 
   return <VerificationDashboard initialVerifications={result.data} masterData={masterData} />;
 }
