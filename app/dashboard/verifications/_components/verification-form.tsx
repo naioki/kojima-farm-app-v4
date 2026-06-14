@@ -3,9 +3,9 @@
 import { useForm, useFieldArray, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { useState, useTransition, useEffect, useCallback } from "react";
+import { useState, useTransition, useEffect, useCallback, useMemo } from "react";
 import {
-  Plus, Trash2, CheckCircle, Loader2, Sparkles, Download, AlertTriangle,
+  Plus, Trash2, CheckCircle, Loader2, Sparkles, Download, AlertTriangle, ArrowUp, ArrowDown,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -133,6 +133,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
   const [confirmOpen,  setConfirmOpen]  = useState(false);
   const [approvedOrderId, setApprovedOrderId] = useState<string | null>(null);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
+  const [sortAsc, setSortAsc] = useState(true);
 
   const tomorrow = new Date(Date.now() + 86400000).toISOString().split("T")[0];
 
@@ -159,6 +160,20 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
     control: form.control,
     name: "lines",
   });
+
+  // 配送順ソート（フォーム配列は変えず、表示順インデックスだけ計算）
+  const currentStores = useWatch({ control: form.control, name: "lines" });
+  const displayIndices = useMemo(() => {
+    const indices = fields.map((_, i) => i);
+    return indices.sort((a, b) => {
+      const aStore = currentStores?.[a]?.store ?? "";
+      const bStore = currentStores?.[b]?.store ?? "";
+      const aOrd = masterData.storeOrder[aStore] ?? 999;
+      const bOrd = masterData.storeOrder[bStore] ?? 999;
+      const diff = aOrd !== bOrd ? aOrd - bOrd : aStore.localeCompare(bStore, "ja");
+      return sortAsc ? diff : -diff;
+    });
+  }, [fields, currentStores, masterData.storeOrder, sortAsc]);
 
   // ── エラートースト ─────────────────────────────────────────────────
   function toastError(title: string, detail: string) {
@@ -332,6 +347,17 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
             </Badge>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSortAsc((v) => !v)}
+              className="h-7 px-2 rounded text-[11px] flex items-center gap-1 border transition-colors bg-background text-muted-foreground border-input hover:text-foreground"
+              title="配送順の昇順/降順を切り替え"
+            >
+              {sortAsc
+                ? <><ArrowUp className="h-3 w-3" />配送順 ▲</>
+                : <><ArrowDown className="h-3 w-3" />配送順 ▼</>
+              }
+            </button>
             <Button
               type="button"
               variant="outline"
@@ -389,7 +415,8 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                 </tr>
               </thead>
               <tbody>
-                {fields.map((field, idx) => {
+                {displayIndices.map((idx, displayPos) => {
+                  const field     = fields[idx];
                   const conf      = (verification.parsed_lines[idx] as any)?.confidence;
                   const isLowConf = conf !== undefined && conf < 0.9;
                   const storeErr  = form.formState.errors.lines?.[idx]?.store;
@@ -407,7 +434,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                       <td className="px-2 py-1 text-center text-muted-foreground">
                         {isLowConf
                           ? <span title="要確認"><AlertTriangle className="h-3.5 w-3.5 text-amber-500 mx-auto" /></span>
-                          : <span className="text-[11px]">{idx + 1}</span>
+                          : <span className="text-[11px]">{displayPos + 1}</span>
                         }
                       </td>
 
