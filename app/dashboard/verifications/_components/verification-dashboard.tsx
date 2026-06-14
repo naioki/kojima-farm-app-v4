@@ -7,6 +7,13 @@ import { VerificationForm } from "./verification-form";
 import type { PendingVerification, MasterData } from "@/app/actions/ocr-actions";
 
 type Filter = "pending" | "all";
+type DateRange = "7d" | "30d" | "all";
+
+const DATE_RANGE_LABELS: Record<DateRange, string> = {
+  "7d": "7日",
+  "30d": "30日",
+  "all": "全期間",
+};
 
 const PENDING_STATUSES = ["pending", "needs_review"];
 
@@ -21,6 +28,24 @@ export function VerificationDashboard({
 }: VerificationDashboardProps) {
   const [verifications, setVerifications] = useState(initialVerifications);
   const [filter, setFilter] = useState<Filter>("pending");
+  const [dateRange, setDateRange] = useState<DateRange>(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("verificationDateRange") as DateRange) ?? "30d";
+    }
+    return "30d";
+  });
+
+  function setDateRangeAndSave(range: DateRange) {
+    setDateRange(range);
+    localStorage.setItem("verificationDateRange", range);
+  }
+
+  function applyDateFilter(list: PendingVerification[]) {
+    if (dateRange === "all") return list;
+    const days = dateRange === "7d" ? 7 : 30;
+    const cutoff = new Date(Date.now() - days * 86400000);
+    return list.filter((v) => new Date(v.created_at) >= cutoff);
+  }
 
   // サーバーサイドからのプロップ更新（メール取得など）をステートに同期する
   useEffect(() => {
@@ -36,10 +61,11 @@ export function VerificationDashboard({
     });
   }, [initialVerifications, filter]);
 
-  const filtered =
+  const filtered = applyDateFilter(
     filter === "pending"
       ? verifications.filter((v) => PENDING_STATUSES.includes(v.status))
-      : verifications;
+      : verifications
+  );
 
   const [selectedId, setSelectedId] = useState<string | null>(
     () => filtered[0]?.id ?? null
@@ -102,6 +128,23 @@ export function VerificationDashboard({
                 {verifications.length}
               </span>
             </button>
+          </div>
+          {/* 日付フィルター */}
+          <div className="flex gap-1 px-3 py-2">
+            {(["7d", "30d", "all"] as DateRange[]).map((range) => (
+              <button
+                key={range}
+                type="button"
+                onClick={() => setDateRangeAndSave(range)}
+                className={`flex-1 text-[10px] py-1 rounded transition-colors ${
+                  dateRange === range
+                    ? "bg-primary text-primary-foreground font-semibold"
+                    : "bg-muted text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {DATE_RANGE_LABELS[range]}
+              </button>
+            ))}
           </div>
         </div>
 
