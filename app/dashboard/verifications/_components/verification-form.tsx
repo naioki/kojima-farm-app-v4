@@ -270,7 +270,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
               明細データがありません
             </div>
           ) : (
-            <table className="w-full text-xs">
+            <table className="w-full min-w-[560px] text-xs">
               <thead className="bg-muted sticky top-0">
                 <tr>
                   {["店舗","品目","規格","入数","箱","バラ","合計"].map((h) => (
@@ -398,9 +398,9 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
             )}
           </div>
 
-          {/* 明細テーブル */}
+          {/* 明細テーブル（モバイルは横スクロール） */}
           <div className="flex-1 overflow-auto">
-            <table className="w-full text-xs border-separate border-spacing-0">
+            <table className="w-full min-w-[560px] text-xs border-separate border-spacing-0">
               <thead className="bg-muted/80 sticky top-0 z-10">
                 <tr>
                   <th className="px-2 py-2 text-center font-semibold text-muted-foreground w-8">#</th>
