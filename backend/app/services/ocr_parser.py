@@ -355,7 +355,9 @@ def generate_labels_from_data(order_data: List[Dict], shipment_date: str) -> Lis
         if unit == 0:
             continue
 
-        unit_label = get_unit_label_for_item(item, spec)
+        # DBの unit_type を優先（納品書・出荷一覧表と単位を統一）。なければ推測ロジックで補完
+        db_unit_type = entry.get("unit_type", "")
+        unit_label = db_unit_type if db_unit_type else get_unit_label_for_item(item, spec)
         total_boxes = boxes + (1 if remainder > 0 else 0)
 
         # 通常箱
