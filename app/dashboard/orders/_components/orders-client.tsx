@@ -96,8 +96,11 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
   const totalQty = selectedOrder
     ? selectedOrder.lines.reduce((sum, l) => sum + (l.total_qty || 0), 0)
     : 0;
-  const totalAmount = selectedOrder
-    ? selectedOrder.lines.reduce((sum, l) => sum + (l.line_total || 0), 0)
+  // コンテナ数 = 箱数 + 端数箱（バラがあれば +1）
+  const containerCount = (l: { boxes?: number | null; remainder?: number | null }) =>
+    (l.boxes || 0) + ((l.remainder || 0) > 0 ? 1 : 0);
+  const totalContainers = selectedOrder
+    ? selectedOrder.lines.reduce((sum, l) => sum + containerCount(l), 0)
     : 0;
 
   // サーバーサイドからのプロップ更新（リスト更新など）をステートに同期する
@@ -342,7 +345,7 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
                     <TableHead className="text-right">箱数</TableHead>
                     <TableHead className="text-right">バラ</TableHead>
                     <TableHead className="text-right">合計</TableHead>
-                    <TableHead className="text-right">小計</TableHead>
+                    <TableHead className="text-right">コンテナ数</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -354,11 +357,7 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
                       <TableCell className="text-right font-mono">{line.boxes || "—"}</TableCell>
                       <TableCell className="text-right font-mono">{line.remainder || "—"}</TableCell>
                       <TableCell className="text-right font-mono font-semibold">{line.total_qty}</TableCell>
-                      <TableCell className="text-right font-mono text-muted-foreground">
-                        {line.line_total != null
-                          ? `¥${line.line_total.toLocaleString()}`
-                          : "—"}
-                      </TableCell>
+                      <TableCell className="text-right font-mono">{containerCount(line) || "—"}</TableCell>
                     </TableRow>
                   ))}
                   {/* 合計行 */}
@@ -368,7 +367,7 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
                     <TableCell className="text-right font-mono">{totalRemainder || "—"}</TableCell>
                     <TableCell className="text-right font-mono">{totalQty}</TableCell>
                     <TableCell className="text-right font-mono text-foreground font-semibold">
-                      {totalAmount > 0 ? `¥${totalAmount.toLocaleString()}` : "—"}
+                      {totalContainers || "—"}
                     </TableCell>
                   </TableRow>
                 </TableBody>

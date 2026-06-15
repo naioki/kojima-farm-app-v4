@@ -599,29 +599,52 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
         </CardFooter>
       </form>
 
-      {/* 承認確認ダイアログ — 日付確認 */}
+      {/* 承認確認ダイアログ — 日付確認 ＋ 明細一覧 */}
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent className="max-w-sm">
+        <AlertDialogContent className="max-w-lg">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-center text-lg">受注日の確認</AlertDialogTitle>
+            <AlertDialogTitle className="text-center text-lg">受注内容の確認</AlertDialogTitle>
             <AlertDialogDescription asChild>
-              <div className="text-center space-y-4 pt-2">
-                <p className="text-muted-foreground text-sm">
-                  この日付で受注登録・PDF発行してよいですか？
+              <div className="space-y-4 pt-2">
+                <p className="text-muted-foreground text-sm text-center">
+                  この内容で受注登録・PDF発行してよいですか？
                 </p>
-                <div className="rounded-xl border-2 border-primary/30 bg-primary/5 py-4 px-6 inline-block">
-                  <p className="text-2xl font-bold tracking-wide text-foreground">
-                    {form.getValues("order_date")}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {form.getValues("lines").length} 明細
-                  </p>
+                {/* 受注日 */}
+                <div className="flex justify-center">
+                  <div className="rounded-xl border-2 border-primary/30 bg-primary/5 py-3 px-6 text-center">
+                    <p className="text-2xl font-bold tracking-wide text-foreground">
+                      {form.getValues("order_date")}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {form.getValues("lines").length} 明細
+                    </p>
+                  </div>
+                </div>
+                {/* 明細一覧 */}
+                <div className="rounded-lg border bg-muted/30 overflow-hidden">
+                  <div className="max-h-52 overflow-auto divide-y">
+                    {form.getValues("lines").map((line, i) => {
+                      const total = (line.unit || 0) * (line.boxes || 0) + (line.remainder || 0);
+                      return (
+                        <div key={i} className="px-3 py-1.5 flex items-center gap-2 text-xs">
+                          <span className="font-medium w-16 truncate text-foreground shrink-0">{line.store || "—"}</span>
+                          <span className="text-muted-foreground flex-1 truncate">
+                            {line.item}{line.spec ? ` (${line.spec})` : ""}
+                          </span>
+                          <span className="font-mono shrink-0">
+                            {line.boxes}箱{line.remainder > 0 ? `+${line.remainder}` : ""}
+                            <span className="text-muted-foreground ml-1">= {total}</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="sm:justify-center gap-3 pt-2">
-            <AlertDialogCancel disabled={isPending}>日付を修正する</AlertDialogCancel>
+            <AlertDialogCancel disabled={isPending}>修正する</AlertDialogCancel>
             <AlertDialogAction
               className="bg-green-600 hover:bg-green-700"
               disabled={isPending}
@@ -629,7 +652,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
             >
               {isPending
                 ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />処理中...</>
-                : "この日付で承認する"
+                : "承認 ＆ PDF発行"
               }
             </AlertDialogAction>
           </AlertDialogFooter>
