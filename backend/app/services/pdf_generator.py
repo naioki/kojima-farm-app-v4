@@ -419,9 +419,10 @@ class LabelPDFGenerator:
             item_units[key] = entry.get('unit_label', '')
 
         # 納品書テーブルを先に構築して高さを測定
+        # 品目名→規格でソートし、同じ品目（例: 胡瓜）が必ず隣り合うようにまとめる
         nb_header = ["品目", "規格", "数量", "単位", "単価", "金額", "備考"]
         nb_data = [nb_header]
-        for (item, spec), qty in item_totals.items():
+        for (item, spec), qty in sorted(item_totals.items(), key=lambda kv: (kv[0][0], kv[0][1])):
             unit_label = item_units.get((item, spec), '')
             nb_data.append([item, spec or "—", str(qty), unit_label, "", "", ""])
 
