@@ -25,6 +25,13 @@ from app.services.config_manager import (
     auto_learn_store,
     lookup_unit,
 )
+from app.services.prompt_manager import (
+    DEFAULT_IMAGE_PROMPT,
+    DEFAULT_TEXT_PROMPT,
+    get_active_image_prompt,
+    get_active_text_prompt,
+    render_prompt,
+)
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
@@ -112,63 +119,35 @@ def _generate_with_fallback(api_key: str, contents: list) -> str:
 
 # ─── Gemini parse ─────────────────────────────────────────────────────────────
 
+def _extract_json(text: str) -> List[Dict]:
+    """Gemini 応答テキストから JSON を抽出してパース。"""
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        for part in text.split("```"):
+            if "{" in part and "[" in part:
+                text = part.strip()
+                break
+    result = json.loads(text)
+    if isinstance(result, dict):
+        result = [result]
+    return result
+
+
 def parse_order_image(image: Image.Image, api_key: str) -> Optional[List[Dict]]:
     """
     Gemini API で注文書画像を解析。
-    v3 app.py の parse_order_image() と完全同一プロンプト・ロジック。
-    st.error → raise Exception に置換。
+    プロンプトは prompt_manager（Supabase 管理）から取得。
+    フェイルセーフ: カスタムプロンプトで失敗/空結果なら内蔵デフォルトで自動再試行。
 
     Returns:
         解析結果リスト or None（失敗時）
     """
     known_stores = load_stores()
     item_normalization = load_items()
-    item_settings_for_prompt = load_item_settings()
-    box_count_items = get_box_count_items()
 
     store_list = "、".join(known_stores)
-    unit_lines = "\n".join(
-        [
-            f"- {name}: 1コンテナ={s.get('default_unit', 0)}{s.get('unit_type', '袋')}、受信方法={'【箱数】×数字をそのままboxesに' if s.get('receive_as_boxes') else '【総数】×数字÷unit=boxes, 余り=remainder'}"
-            for name, s in sorted(item_settings_for_prompt.items())
-            if s.get("default_unit", 0) > 0
-        ]
-    )
-    box_count_str = "、".join(box_count_items) if box_count_items else "（なし）"
-
-    # ── プロンプト（v3ロジックに合わせ input_num で受け取る） ────────────────
-    prompt = f"""
-画像を解析し、以下の厳密なルールに従ってJSONで返してください。
-
-【店舗名リスト（参考）】
-{store_list}
-※上記リストにない店舗名も読み取ってください。
-
-【品目名の正規化ルール】
-{json.dumps(item_normalization, ensure_ascii=False, indent=2)}
-
-【重要ルール】
-1. 店舗名の後に「:」または改行がある場合、その後の行は全てその店舗の注文です
-2. 品目名がない行（例：「50×1」）は、直前の品目の続きとして処理してください
-3. 「/」で区切られた複数の注文は、同じ店舗・同じ品目として統合してください
-4. 「胡瓜バラ」「ネギバラ」と「胡瓜3本」「ネギ2本」は**別の品目**として扱ってください
-5. 「ネギバラ」は item="長ねぎバラ"、spec="" で出力してください（長ネギ2本と混同しない）
-6. 「胡瓜バラ50本」は item="胡瓜"、spec="50本" で出力してください
-
-【最重要：input_num には注文書の「×」の直後の数字をそのまま入れてください】
-- 箱数への変換・割り算は不要です。システムが自動計算します。
-- unit=0、boxes=0、remainder=0 で出力してください。
-- 例：「胡瓜3本×400」→ {{"item":"胡瓜","spec":"3本","input_num":400,"unit":0,"boxes":0,"remainder":0}}
-- 例：「ネギ2本×60」→ {{"item":"長ネギ","spec":"2本","input_num":60,"unit":0,"boxes":0,"remainder":0}}
-- 例：「ネギバラ×250」→ {{"item":"長ねぎバラ","spec":"","input_num":250,"unit":0,"boxes":0,"remainder":0}}
-- 例：「胡瓜バラ50本×20」→ {{"item":"胡瓜","spec":"50本","input_num":20,"unit":0,"boxes":0,"remainder":0}}
-- 例：「春菊×30」→ {{"item":"春菊","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}}
-
-【出力JSON形式】
-[{{"store":"店舗名","item":"品目名","spec":"規格","input_num":数字,"unit":0,"boxes":0,"remainder":0}}]
-
-必ず全ての店舗と品目を漏れなく読み取ってください。
-"""
+    norm_json = json.dumps(item_normalization, ensure_ascii=False, indent=2)
 
     # PIL Image → bytes で渡す
     import io as _io
@@ -177,25 +156,28 @@ def parse_order_image(image: Image.Image, api_key: str) -> Optional[List[Dict]]:
     image.save(buf, format=fmt)
     image_bytes = buf.getvalue()
     mime_type = "image/jpeg" if fmt.upper() in ("JPEG", "JPG") else f"image/{fmt.lower()}"
+    image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
-    text = _generate_with_fallback(api_key, [
-        genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-        prompt,
-    ])
+    def _run(template: str) -> List[Dict]:
+        prompt = render_prompt(template, store_list=store_list, item_normalization=norm_json)
+        text = _generate_with_fallback(api_key, [image_part, prompt])
+        return _extract_json(text)
 
-    # JSON 抽出
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        for part in text.split("```"):
-            if "{" in part and "[" in part:
-                text = part.strip()
-                break
-
-    result = json.loads(text)
-    if isinstance(result, dict):
-        result = [result]
-    return result
+    active = get_active_image_prompt()
+    try:
+        result = _run(active)
+        if result:
+            return result
+        # 空結果: カスタムなら デフォルトで再試行
+        if active is not DEFAULT_IMAGE_PROMPT:
+            print("[parse_order_image] custom prompt returned empty, retrying with default")
+            return _run(DEFAULT_IMAGE_PROMPT)
+        return result
+    except Exception as e:
+        if active is not DEFAULT_IMAGE_PROMPT:
+            print(f"[parse_order_image] custom prompt failed ({e}), retrying with default")
+            return _run(DEFAULT_IMAGE_PROMPT)
+        raise
 
 
 # ─── Text parse (画像なし・テキスト本文から直接解析) ──────────────────────────
@@ -204,71 +186,37 @@ def parse_order_text(text_body: str, api_key: str) -> Optional[List[Dict]]:
     """
     テキスト本文をそのまま Gemini に渡して注文データを解析。
     転送メールなど、FAX 画像ではなくテキスト形式の注文書に対応。
+    プロンプトは prompt_manager（Supabase 管理）から取得。
+    フェイルセーフ: カスタムプロンプトで失敗/空結果なら内蔵デフォルトで自動再試行。
     """
     known_stores = load_stores()
     item_normalization = load_items()
-    item_settings_for_prompt = load_item_settings()
-    box_count_items = get_box_count_items()
 
     store_list = "、".join(known_stores)
-    unit_lines = "\n".join(
-        [
-            f"- {name}: 1コンテナ={s.get('default_unit', 0)}{s.get('unit_type', '袋')}、受信方法={'【箱数】×数字をそのままboxesに' if s.get('receive_as_boxes') else '【総数】×数字÷unit=boxes, 余り=remainder'}"
-            for name, s in sorted(item_settings_for_prompt.items())
-            if s.get("default_unit", 0) > 0
-        ]
-    )
-    box_count_str = "、".join(box_count_items) if box_count_items else "（なし）"
+    norm_json = json.dumps(item_normalization, ensure_ascii=False, indent=2)
 
-    prompt = f"""
-以下のメールテキストから注文データを抽出し、厳密なルールに従ってJSONで返してください。
+    def _run(template: str) -> List[Dict]:
+        prompt = render_prompt(
+            template, store_list=store_list,
+            item_normalization=norm_json, text_body=text_body,
+        )
+        text = _generate_with_fallback(api_key, [prompt])
+        return _extract_json(text)
 
-【店舗名リスト（参考）】
-{store_list}
-※上記リストにない店舗名も読み取ってください。
-
-【品目名の正規化ルール】
-{json.dumps(item_normalization, ensure_ascii=False, indent=2)}
-
-【重要ルール】
-1. 店舗名の後に「:」または改行がある場合、その後の行は全てその店舗の注文です
-2. 「/」で区切られた複数の注文は、同じ店舗・同じ品目として統合してください
-3. 「胡瓜バラ」「ネギバラ」と「胡瓜3本」「ネギ2本」は**別の品目**として扱ってください
-4. 「ネギバラ」は item="長ねぎバラ"、spec="" で出力してください（長ネギ2本と混同しない）
-5. 「胡瓜バラ50本」は item="胡瓜"、spec="50本" で出力してください
-
-【最重要：input_num には注文書の「×」の直後の数字をそのまま入れてください】
-- 箱数への変換・割り算は不要です。システムが自動計算します。
-- unit=0、boxes=0、remainder=0 で出力してください。
-- 例：「胡瓜3本×400」→ {{"item":"胡瓜","spec":"3本","input_num":400,"unit":0,"boxes":0,"remainder":0}}
-- 例：「ネギ2本×60」→ {{"item":"長ネギ","spec":"2本","input_num":60,"unit":0,"boxes":0,"remainder":0}}
-- 例：「ネギバラ×250」→ {{"item":"長ねぎバラ","spec":"","input_num":250,"unit":0,"boxes":0,"remainder":0}}
-- 例：「胡瓜バラ50本×20」→ {{"item":"胡瓜","spec":"50本","input_num":20,"unit":0,"boxes":0,"remainder":0}}
-- 例：「春菊×30」→ {{"item":"春菊","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}}
-
-【出力JSON形式】
-[{{"store":"店舗名","item":"品目名","spec":"規格","input_num":数字,"unit":0,"boxes":0,"remainder":0}}]
-
-必ず全ての店舗と品目を漏れなく読み取ってください。
-
-【注文メールテキスト】
-{text_body}
-"""
-
-    text = _generate_with_fallback(api_key, [prompt])
-
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        for part in text.split("```"):
-            if "{" in part and "[" in part:
-                text = part.strip()
-                break
-
-    result = json.loads(text)
-    if isinstance(result, dict):
-        result = [result]
-    return result
+    active = get_active_text_prompt()
+    try:
+        result = _run(active)
+        if result:
+            return result
+        if active is not DEFAULT_TEXT_PROMPT:
+            print("[parse_order_text] custom prompt returned empty, retrying with default")
+            return _run(DEFAULT_TEXT_PROMPT)
+        return result
+    except Exception as e:
+        if active is not DEFAULT_TEXT_PROMPT:
+            print(f"[parse_order_text] custom prompt failed ({e}), retrying with default")
+            return _run(DEFAULT_TEXT_PROMPT)
+        raise
 
 
 # ─── Validation ──────────────────────────────────────────────────────────────

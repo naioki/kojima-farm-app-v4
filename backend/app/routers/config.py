@@ -20,8 +20,10 @@ from app.services.config_manager import (
     load_item_settings,
     set_item_setting,
     load_stores,
+    load_items,
 )
 from app.services.supabase_client import get_supabase
+from app.services import prompt_manager
 
 router = APIRouter()
 
@@ -307,4 +309,206 @@ async def update_chat_config(body: ChatConfigOut):
     os.environ["ALLOWED_DISCORD_USERS"] = body.allowed_discord_users or ""
 
     return body
+
+
+# ─── Prompt Config（AIプロンプト設定） ──────────────────────────────────────────
+
+class PromptConfigOut(BaseModel):
+    image_prompt: Optional[str] = None
+    text_prompt: Optional[str] = None
+    is_custom_enabled: bool = False
+    version: int = 1
+    # フロントが内蔵デフォルトを表示できるよう同梱
+    default_image_prompt: str = prompt_manager.DEFAULT_IMAGE_PROMPT
+    default_text_prompt: str = prompt_manager.DEFAULT_TEXT_PROMPT
+    required_image_placeholders: List[str] = prompt_manager.REQUIRED_IMAGE_PLACEHOLDERS
+    required_text_placeholders: List[str] = prompt_manager.REQUIRED_TEXT_PLACEHOLDERS
+
+
+class PromptConfigIn(BaseModel):
+    image_prompt: Optional[str] = None
+    text_prompt: Optional[str] = None
+    is_custom_enabled: bool = False
+    saved_by: Optional[str] = None
+
+
+class PromptTestIn(BaseModel):
+    kind: str  # "image" | "text"
+    prompt: str
+    sample_text: Optional[str] = None  # text の dry-run 用
+
+
+class PromptTestOut(BaseModel):
+    ok: bool
+    missing_placeholders: List[str] = []
+    parsed: Optional[List[Dict[str, Any]]] = None
+    message: str = ""
+
+
+class PromptHistoryEntry(BaseModel):
+    version: int
+    image_prompt: Optional[str] = None
+    text_prompt: Optional[str] = None
+    is_custom_enabled: bool = False
+    saved_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+@router.get("/prompt", response_model=PromptConfigOut)
+async def get_prompt_config():
+    sb = get_supabase()
+    try:
+        rows = (
+            sb.table("prompt_config")
+            .select("image_prompt, text_prompt, is_custom_enabled, version")
+            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .limit(1)
+            .execute()
+        )
+        if rows.data:
+            r = rows.data[0]
+            return PromptConfigOut(
+                image_prompt=r.get("image_prompt"),
+                text_prompt=r.get("text_prompt"),
+                is_custom_enabled=r.get("is_custom_enabled", False),
+                version=r.get("version", 1),
+            )
+    except Exception as e:
+        print(f"[prompt_config GET] Supabase error: {e}")
+    return PromptConfigOut()
+
+
+@router.put("/prompt", response_model=PromptConfigOut)
+async def update_prompt_config(body: PromptConfigIn):
+    """
+    プロンプト設定を保存。
+    フェイルセーフ:
+      - カスタムを有効化する場合は必須プレースホルダ検証を強制（欠落なら 400）
+      - 保存前に現行設定を prompt_config_history へ退避（ロールバック用）
+    """
+    # ── 検証（カスタム有効時のみ厳格に）────────────────────────────────
+    if body.is_custom_enabled:
+        if body.image_prompt:
+            miss = prompt_manager.validate_prompt(body.image_prompt, "image")
+            if miss:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"画像プロンプトに必須項目が不足: {', '.join(miss)}",
+                )
+        if body.text_prompt:
+            miss = prompt_manager.validate_prompt(body.text_prompt, "text")
+            if miss:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"テキストプロンプトに必須項目が不足: {', '.join(miss)}",
+                )
+
+    sb = get_supabase()
+    try:
+        existing = (
+            sb.table("prompt_config")
+            .select("image_prompt, text_prompt, is_custom_enabled, version")
+            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .limit(1)
+            .execute()
+        )
+        prev = existing.data[0] if existing.data else None
+        prev_version = (prev or {}).get("version", 0) or 0
+
+        # 現行設定を履歴へ退避
+        if prev:
+            try:
+                sb.table("prompt_config_history").insert({
+                    "tenant_id": _DEFAULT_TENANT_ID,
+                    "version": prev_version,
+                    "image_prompt": prev.get("image_prompt"),
+                    "text_prompt": prev.get("text_prompt"),
+                    "is_custom_enabled": prev.get("is_custom_enabled", False),
+                    "saved_by": body.saved_by,
+                }).execute()
+            except Exception as he:
+                print(f"[prompt_config PUT] history insert skipped: {he}")
+
+        new_version = prev_version + 1
+        payload = {
+            "tenant_id": _DEFAULT_TENANT_ID,
+            "image_prompt": body.image_prompt,
+            "text_prompt": body.text_prompt,
+            "is_custom_enabled": body.is_custom_enabled,
+            "version": new_version,
+        }
+        if prev:
+            sb.table("prompt_config").update(payload).eq("tenant_id", _DEFAULT_TENANT_ID).execute()
+        else:
+            sb.table("prompt_config").insert(payload).execute()
+
+        return PromptConfigOut(
+            image_prompt=body.image_prompt,
+            text_prompt=body.text_prompt,
+            is_custom_enabled=body.is_custom_enabled,
+            version=new_version,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[prompt_config PUT] error: {e}")
+        raise HTTPException(status_code=500, detail=f"保存に失敗しました: {e}")
+
+
+@router.post("/prompt/test", response_model=PromptTestOut)
+async def test_prompt(body: PromptTestIn):
+    """
+    保存前のドライラン。
+      1) 必須プレースホルダ検証（常時）
+      2) text かつ sample_text あり → 実際に Gemini で解析して結果を返す
+    """
+    missing = prompt_manager.validate_prompt(body.prompt, body.kind)
+    if missing:
+        return PromptTestOut(
+            ok=False,
+            missing_placeholders=missing,
+            message=f"必須項目が不足しています: {', '.join(missing)}",
+        )
+
+    if body.kind == "text" and body.sample_text:
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            return PromptTestOut(ok=True, message="検証OK（GEMINI_API_KEY 未設定のため実解析はスキップ）")
+        try:
+            from app.services.ocr_parser import _generate_with_fallback, _extract_json
+            store_list = "、".join(load_stores())
+            import json as _json
+            norm = _json.dumps(load_items(), ensure_ascii=False, indent=2)
+            rendered = prompt_manager.render_prompt(
+                body.prompt, store_list=store_list,
+                item_normalization=norm, text_body=body.sample_text,
+            )
+            text = _generate_with_fallback(api_key, [rendered])
+            parsed = _extract_json(text)
+            return PromptTestOut(
+                ok=True, parsed=parsed,
+                message=f"解析成功: {len(parsed)} 件を抽出しました",
+            )
+        except Exception as e:
+            return PromptTestOut(ok=False, message=f"解析エラー: {e}")
+
+    return PromptTestOut(ok=True, message="検証OK（必須項目あり）")
+
+
+@router.get("/prompt/history", response_model=List[PromptHistoryEntry])
+async def get_prompt_history():
+    sb = get_supabase()
+    try:
+        rows = (
+            sb.table("prompt_config_history")
+            .select("version, image_prompt, text_prompt, is_custom_enabled, saved_by, created_at")
+            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .order("version", desc=True)
+            .limit(20)
+            .execute()
+        )
+        return [PromptHistoryEntry(**r) for r in (rows.data or [])]
+    except Exception as e:
+        print(f"[prompt_history GET] error: {e}")
+        return []
 
