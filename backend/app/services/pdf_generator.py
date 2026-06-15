@@ -203,22 +203,10 @@ class LabelPDFGenerator:
                 x = col * self.LABEL_WIDTH
                 y = self.A4_HEIGHT - (row + 1) * self.LABEL_HEIGHT
                 
-                # 端数ラベルの判定を改善（is_fractionフラグまたはquantityが満杯でない場合）
+                # 端数ラベルの判定は is_fraction フラグのみで行う。
+                # （最後の箱 X/X でも、実際に端数でなければ強調しない＝積むとき端数だけ目立たせる目的）
                 is_fraction = label.get('is_fraction', False)
-                if not is_fraction:
-                    # sequenceが「X/X」形式（最後の箱）の場合も端数と判定
-                    sequence = label.get('sequence', '')
-                    if '/' in sequence:
-                        parts = sequence.split('/')
-                        if len(parts) == 2:
-                            try:
-                                current = int(parts[0])
-                                total = int(parts[1])
-                                if current == total and total > 1:
-                                    is_fraction = True
-                            except ValueError:
-                                pass
-                
+
                 # ラベルを描画
                 if is_fraction:
                     self._draw_fraction_label(c, x, y, label, font_name)
