@@ -207,6 +207,7 @@ async def parse_verification(req: ParseRequest):
     tenant_id_for_parse = verif["tenant_id"]
     _prod_rows = sb.table("products").select("id, name").eq("tenant_id", tenant_id_for_parse).execute()
     _prod_by_name: Dict[str, str] = {r["name"].strip(): r["id"] for r in (_prod_rows.data or [])}
+    _name_by_prod: Dict[str, str] = {r["id"]: r["name"].strip() for r in (_prod_rows.data or [])}
     _ps_rows = sb.table("product_standards").select("id, name, product_id, unit_size, receipt_mode").eq("tenant_id", tenant_id_for_parse).eq("is_active", True).execute()
     _ps_by_product: Dict[str, List[str]] = {}
     _unit_by_ps: Dict[str, int] = {}           # (product_id, spec_name) -> unit_size
@@ -217,13 +218,22 @@ async def parse_verification(req: ParseRequest):
         _receipt_mode_by_ps[(r["product_id"], r["name"].strip())] = r.get("receipt_mode") or "総数入力"
 
     def _resolve_prod_id(item: str) -> str | None:
-        """商品名から product_id を解決（完全一致→部分一致）"""
-        prod_id = _prod_by_name.get(item.strip())
-        if not prod_id:
-            candidates = [n for n in _prod_by_name if item.strip() in n or n in item.strip()]
-            if len(candidates) == 1:
-                prod_id = _prod_by_name[candidates[0]]
-        return prod_id
+        """商品名から product_id を解決（完全一致→最長部分一致）。
+        AIが「胡瓜バラ(50本)」のように余分な接尾辞を付けても、
+        マスター名が含まれていれば最長一致（胡瓜＜胡瓜バラ）で解決する。"""
+        item_s = item.strip()
+        prod_id = _prod_by_name.get(item_s)
+        if prod_id:
+            return prod_id
+        # マスター名が item に含まれる → 最長（最も具体的）を優先
+        contained = [n for n in _prod_by_name if n and n in item_s]
+        if contained:
+            return _prod_by_name[max(contained, key=len)]
+        # item がマスター名に含まれる（AIが短く返した場合）→ 候補1件のみ採用
+        candidates = [n for n in _prod_by_name if item_s and item_s in n]
+        if len(candidates) == 1:
+            return _prod_by_name[candidates[0]]
+        return None
 
     def _resolve_spec(item: str, spec: str) -> str:
         """スペックが空またはマスター不一致のとき、候補1件なら自動補完"""
@@ -280,6 +290,10 @@ async def parse_verification(req: ParseRequest):
     parsed_lines_with_conf = []
     for entry in validated:
         item_name = entry.get("item", "")
+        # マスターに解決できたら正式な品目名に正規化（例: 胡瓜バラ(50本) → 胡瓜バラ）
+        _rid = _resolve_prod_id(item_name)
+        if _rid and _name_by_prod.get(_rid):
+            item_name = _name_by_prod[_rid]
         resolved_spec = _resolve_spec(item_name, entry.get("spec", ""))
         db_unit = _resolve_unit(item_name, resolved_spec)
         receipt_mode = _resolve_receipt_mode(item_name, resolved_spec)
@@ -320,6 +334,7 @@ async def parse_verification(req: ParseRequest):
                 break
         parsed_lines_with_conf.append({
             **entry,
+            "item": item_name,
             "spec": resolved_spec,
             "unit": unit,
             "boxes": boxes,
