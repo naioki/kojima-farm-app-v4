@@ -47,7 +47,7 @@ DEFAULT_IMAGE_PROMPT = """
 - 例：「胡瓜3本×400」→ {"item":"胡瓜","spec":"3本","input_num":400,"unit":0,"boxes":0,"remainder":0}
 - 例：「ネギ2本×60」→ {"item":"長ネギ","spec":"2本","input_num":60,"unit":0,"boxes":0,"remainder":0}
 - 例：「ネギバラ×250」→ {"item":"長ねぎバラ","spec":"","input_num":250,"unit":0,"boxes":0,"remainder":0}
-- 例：「胡瓜バラ50本×15」→ {"item":"胡瓜バラ(100本)","spec":"","input_num":750,"unit":0,"boxes":0,"remainder":0}
+- 例：「胡瓜バラ50本×15」→ {"item":"胡瓜バラ","spec":"100本","input_num":750,"unit":0,"boxes":0,"remainder":0}
 - 例：「春菊×30」→ {"item":"春菊","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}
 
 【出力JSON形式】
@@ -72,7 +72,7 @@ DEFAULT_TEXT_PROMPT = """
 3. 「胡瓜バラ」「ネギバラ」と「胡瓜3本」「ネギ2本」は**別の品目**として扱ってください
 4. 「ネギバラ」は item="長ねぎバラ"、spec="" で出力してください（長ネギ2本と混同しない）
 5. 「胡瓜バラ50本」は **100本換算** に変換してください：
-   - item="胡瓜バラ(100本)"、spec=""、input_num=N×50（例：×15なら750）
+   - item="胡瓜バラ"、spec="100本"、input_num=N×50（例：×15なら750）
 
 【最重要：input_num には注文書の「×」の直後の数字をそのまま入れてください】
 - 箱数への変換・割り算は不要です。システムが自動計算します。
@@ -80,7 +80,7 @@ DEFAULT_TEXT_PROMPT = """
 - 例：「胡瓜3本×400」→ {"item":"胡瓜","spec":"3本","input_num":400,"unit":0,"boxes":0,"remainder":0}
 - 例：「ネギ2本×60」→ {"item":"長ネギ","spec":"2本","input_num":60,"unit":0,"boxes":0,"remainder":0}
 - 例：「ネギバラ×250」→ {"item":"長ねぎバラ","spec":"","input_num":250,"unit":0,"boxes":0,"remainder":0}
-- 例：「胡瓜バラ50本×15」→ {"item":"胡瓜バラ(100本)","spec":"","input_num":750,"unit":0,"boxes":0,"remainder":0}
+- 例：「胡瓜バラ50本×15」→ {"item":"胡瓜バラ","spec":"100本","input_num":750,"unit":0,"boxes":0,"remainder":0}
 - 例：「春菊×30」→ {"item":"春菊","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}
 
 【出力JSON形式】
