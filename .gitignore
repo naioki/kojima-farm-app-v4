@@ -48,3 +48,4 @@ temp/
 
 # Assets (大容量フォント等はGit LFS推奨)
 # assets/*.ttf
+.vercel/
