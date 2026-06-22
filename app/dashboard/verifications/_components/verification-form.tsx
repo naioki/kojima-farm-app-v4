@@ -418,7 +418,9 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                 {displayIndices.map((idx, displayPos) => {
                   const field     = fields[idx];
                   const conf      = (verification.parsed_lines[idx] as any)?.confidence;
-                  const isLowConf = conf !== undefined && conf < 0.9;
+                  // conf===0: マスタ未解決で計算不能（赤・最優先）/ 0<conf<0.9: 要確認（橙）
+                  const isUnresolved = conf === 0;
+                  const isLowConf = conf !== undefined && conf > 0 && conf < 0.9;
                   const storeErr  = form.formState.errors.lines?.[idx]?.store;
                   const itemErr   = form.formState.errors.lines?.[idx]?.item;
 
@@ -427,12 +429,15 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                       key={field.id}
                       className={cn(
                         "border-t transition-colors hover:bg-muted/20",
-                        isLowConf && "bg-amber-50/70"
+                        isLowConf && "bg-amber-50/70",
+                        isUnresolved && "bg-red-50 ring-1 ring-inset ring-red-300"
                       )}
                     >
                       {/* 行番号 */}
                       <td className="px-2 py-1 text-center text-muted-foreground">
-                        {isLowConf
+                        {isUnresolved
+                          ? <span title="マスタ未登録：数量を計算できません。品目・規格・入数を確認してください"><AlertTriangle className="h-3.5 w-3.5 text-red-500 mx-auto" /></span>
+                          : isLowConf
                           ? <span title="要確認"><AlertTriangle className="h-3.5 w-3.5 text-amber-500 mx-auto" /></span>
                           : <span className="text-[11px]">{displayPos + 1}</span>
                         }

@@ -290,6 +290,7 @@ async def parse_verification(req: ParseRequest):
     parsed_lines_with_conf = []
     for entry in validated:
         item_name = entry.get("item", "")
+        raw_item = item_name
         # マスターに解決できたら正式な品目名に正規化（例: 胡瓜バラ(50本) → 胡瓜バラ）
         _rid = _resolve_prod_id(item_name)
         if _rid and _name_by_prod.get(_rid):
@@ -298,6 +299,17 @@ async def parse_verification(req: ParseRequest):
         db_unit = _resolve_unit(item_name, resolved_spec)
         receipt_mode = _resolve_receipt_mode(item_name, resolved_spec)
         receive_as_boxes = receipt_mode in ("箱数入力", "box_count")
+
+        # ── 解決失敗を黙って通さない（silent fail 廃止）──────────────────
+        # 品目がマスタに無い／規格・入数が未設定 のときは計算できないため明示フラグ。
+        resolve_issue: str | None = None
+        if not _rid:
+            resolve_issue = f"品目「{raw_item}」がマスタ未登録です"
+        elif db_unit <= 0:
+            resolve_issue = f"品目「{item_name}」規格「{resolved_spec or '—'}」の入数がマスタ未設定です"
+        if resolve_issue:
+            warnings.append(f"⚠️ {entry.get('store','')} {resolve_issue}（数量は手動確認が必要）")
+            print(f"[parse UNRESOLVED] {entry.get('store','')} {raw_item}: {resolve_issue}")
 
         # Gemini は input_num に「×」の直後の数字をそのまま返す
         input_num = entry.get("input_num") or entry.get("boxes", 0)
@@ -328,10 +340,13 @@ async def parse_verification(req: ParseRequest):
         print(f"[parse] {entry.get('store','')} {item_name} {resolved_spec}: input_num={input_num} unit={db_unit} receipt={receipt_mode} → boxes={boxes} rem={remainder}")
 
         conf = 1.0
-        for w in warnings:
-            if item_name in w or entry.get("store", "") in w:
-                conf = 0.5
-                break
+        if resolve_issue:
+            conf = 0.0  # 解決不能：UI で最優先の要確認として表示
+        else:
+            for w in warnings:
+                if item_name in w or entry.get("store", "") in w:
+                    conf = 0.5
+                    break
         parsed_lines_with_conf.append({
             **entry,
             "item": item_name,

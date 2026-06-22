@@ -674,16 +674,25 @@ export async function saveItemMasterRow(
           .insert({ name: input.item_name, alt_names: altNames, tenant_id: profile.tenant_id, is_active: true })
           .select("id")
           .single();
-        if (prodErr) return { success: false, error: "品目の登録に失敗しました。" };
+        if (prodErr) {
+          if (prodErr.code === "23505")
+            return { success: false, error: `品目名「${input.item_name}」は既に登録されています。規格を追加する場合は既存の品目を編集してください。` };
+          return { success: false, error: "品目の登録に失敗しました。" };
+        }
         productId = newProd.id;
       }
     } else {
-      // product の name / alt_names を更新
-      await supabase
+      // product の name / alt_names を更新（同名の別品目があると一意制約で弾かれる）
+      const { error: updErr } = await supabase
         .from("products")
         .update({ name: input.item_name, alt_names: altNames })
         .eq("id", productId)
         .eq("tenant_id", profile.tenant_id);
+      if (updErr) {
+        if (updErr.code === "23505")
+          return { success: false, error: `品目名「${input.item_name}」は既に別の品目として登録されています。同じ品目名は使えません（規格で区別してください）。` };
+        return { success: false, error: "品目の更新に失敗しました。" };
+      }
     }
 
     let standardId = input.standard_id;
