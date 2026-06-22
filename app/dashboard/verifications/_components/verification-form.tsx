@@ -616,15 +616,15 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                       {form.getValues("order_date")}
                     </p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {form.getValues("lines").length} 明細
+                      {(currentStores ?? []).length} 明細
                     </p>
                   </div>
                 </div>
                 {/* 明細一覧 */}
                 <div className="rounded-lg border bg-muted/30 overflow-hidden">
                   <div className="max-h-52 overflow-auto divide-y">
-                    {form.getValues("lines").map((line, i) => {
-                      const total = (line.unit || 0) * (line.boxes || 0) + (line.remainder || 0);
+                    {(currentStores ?? []).map((line, i) => {
+                      const total = (Number(line.unit) || 0) * (Number(line.boxes) || 0) + (Number(line.remainder) || 0);
                       return (
                         <div key={i} className="px-3 py-1.5 flex items-center gap-2 text-xs">
                           <span className="font-medium w-16 truncate text-foreground shrink-0">{line.store || "—"}</span>
