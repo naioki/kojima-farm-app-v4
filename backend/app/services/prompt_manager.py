@@ -49,6 +49,9 @@ DEFAULT_IMAGE_PROMPT = """
 - 例：「ネギバラ×250」→ {"item":"長ねぎバラ","spec":"","input_num":250,"unit":0,"boxes":0,"remainder":0}
 - 例：「胡瓜バラ50本×15」→ {"item":"胡瓜バラ","spec":"100本","input_num":750,"unit":0,"boxes":0,"remainder":0}
 - 例：「春菊×30」→ {"item":"春菊","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}
+- 例：「トマト×30」→ {"item":"トマト","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}
+- 例：「トマト10k×3」「トマト10kg×3」→ {"item":"トマトバラ","spec":"","input_num":3,"unit":0,"boxes":0,"remainder":0}
+  ※ 「10k」「10kg」が付くトマトは **トマトバラ**（別品目）。付かないトマトと必ず区別すること。
 
 【出力JSON形式】
 [{"store":"店舗名","item":"品目名","spec":"規格","input_num":数字,"unit":0,"boxes":0,"remainder":0}]
@@ -82,6 +85,9 @@ DEFAULT_TEXT_PROMPT = """
 - 例：「ネギバラ×250」→ {"item":"長ねぎバラ","spec":"","input_num":250,"unit":0,"boxes":0,"remainder":0}
 - 例：「胡瓜バラ50本×15」→ {"item":"胡瓜バラ","spec":"100本","input_num":750,"unit":0,"boxes":0,"remainder":0}
 - 例：「春菊×30」→ {"item":"春菊","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}
+- 例：「トマト×30」→ {"item":"トマト","spec":"","input_num":30,"unit":0,"boxes":0,"remainder":0}
+- 例：「トマト10k×3」「トマト10kg×3」→ {"item":"トマトバラ","spec":"","input_num":3,"unit":0,"boxes":0,"remainder":0}
+  ※ 「10k」「10kg」が付くトマトは **トマトバラ**（別品目）。付かないトマトと必ず区別すること。
 
 【出力JSON形式】
 [{"store":"店舗名","item":"品目名","spec":"規格","input_num":数字,"unit":0,"boxes":0,"remainder":0}]
