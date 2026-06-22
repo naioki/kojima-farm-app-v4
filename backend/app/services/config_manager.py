@@ -139,15 +139,17 @@ def auto_learn_store(store_name: str) -> str:
     return store_name
 
 def auto_learn_item(item_name: str) -> str:
-    """新しい品目名を自動学習（正規化して追加）"""
+    """新しい品目名を自動学習（正規化して追加）。
+    ※ 部分一致での既存マッチは廃止。「トマト」が「トマトバラ」の部分文字列として
+       誤マッチし、別品目に化ける事故を防ぐため、完全一致のみを採用する。"""
     items = load_items()
     item_name = item_name.strip()
-    
-    # 既存の品目名と照合
+
+    # 既存の品目名と完全一致のみ照合（部分一致は禁止）
     for normalized, variants in items.items():
-        if item_name in variants or any(variant in item_name for variant in variants):
+        if item_name == normalized or item_name in variants:
             return normalized
-    
+
     # 新しい品目として追加（正規化名はそのまま使用）
     if item_name:
         add_new_item(item_name, [item_name])

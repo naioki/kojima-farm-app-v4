@@ -226,33 +226,34 @@ async def parse_verification(req: ParseRequest):
 
     def _resolve_prod_id(item: str, spec: str = "") -> str | None:
         """商品名から product_id を解決。
-        優先順:
-          1. 品目名の完全一致
-          2. 別表記(alt_names)の完全一致。AIが「トマト10k」を item=トマト + spec=10k に
+        優先順（具体的＝情報量が多いものを先に）:
+          1. 結合エイリアス（item+spec）一致。AIが「トマト10k」を item=トマト + spec=10k に
              分割しても、結合「トマト10k」が別表記に一致すれば トマトバラ に解決する。
-          3. マスター名が item に含まれる最長一致（胡瓜＜胡瓜バラ）
-          4. item がマスター名に含まれる（候補1件のみ）
+             ※ 単独「トマト」の完全一致より先に判定するのが要。
+          2. 品目名の完全一致
+          3. 単独エイリアス(alt_names)一致
+          4. マスター名が item に含まれる最長一致（胡瓜＜胡瓜バラ）
+          5. item がマスター名に含まれる（候補1件のみ）
         """
         item_s = item.strip()
         spec_s = (spec or "").strip()
-        # 1. 完全一致
-        prod_id = _prod_by_name.get(item_s)
-        if prod_id:
-            return prod_id
-        # 2. 別表記一致（結合を優先＝より具体的）
-        cand_keys = []
+        # 1. 結合エイリアスを最優先
         if spec_s:
-            cand_keys.append(_nk(item_s + spec_s))
-            cand_keys.append(_nk(item_s + " " + spec_s))
-        cand_keys.append(_nk(item_s))
-        for k in cand_keys:
-            if k and k in _alias_norm:
-                return _alias_norm[k]
-        # 3. マスター名が item に含まれる → 最長（最も具体的）を優先
+            for k in (_nk(item_s + spec_s), _nk(item_s + " " + spec_s)):
+                if k and k in _alias_norm:
+                    return _alias_norm[k]
+        # 2. 品目名の完全一致
+        if item_s in _prod_by_name:
+            return _prod_by_name[item_s]
+        # 3. 単独エイリアス一致
+        k = _nk(item_s)
+        if k and k in _alias_norm:
+            return _alias_norm[k]
+        # 4. マスター名が item に含まれる → 最長（最も具体的）を優先
         contained = [n for n in _prod_by_name if n and n in item_s]
         if contained:
             return _prod_by_name[max(contained, key=len)]
-        # 4. item がマスター名に含まれる（AIが短く返した場合）→ 候補1件のみ採用
+        # 5. item がマスター名に含まれる（AIが短く返した場合）→ 候補1件のみ採用
         candidates = [n for n in _prod_by_name if item_s and item_s in n]
         if len(candidates) == 1:
             return _prod_by_name[candidates[0]]
@@ -311,14 +312,22 @@ async def parse_verification(req: ParseRequest):
 
     # parsed_lines に confidence を付与 + スペック・unit/boxes をマスターデータで再計算（v3ロジック）
     parsed_lines_with_conf = []
-    for entry in validated:
-        item_name = entry.get("item", "")
-        raw_item = item_name
-        # マスターに解決できたら正式な品目名に正規化（別表記・item+spec結合も考慮）
-        # 例: item=トマト spec=10k → トマトバラ / 胡瓜バラ(50本) → 胡瓜バラ
-        _rid = _resolve_prod_id(item_name, entry.get("spec", ""))
-        if _rid and _name_by_prod.get(_rid):
-            item_name = _name_by_prod[_rid]
+    raw_list = raw_result if isinstance(raw_result, list) else []
+    for idx, entry in enumerate(validated):
+        norm_item = entry.get("item", "")
+        spec_in = entry.get("spec", "")
+        # AIの生の品目名を優先解決する。ファイル正規化が「トマトバラ→トマト」のように
+        # 破壊的に変換するケースがあるため、Supabaseマスタで生の名前を先に照合する。
+        raw_item = norm_item
+        if idx < len(raw_list) and isinstance(raw_list[idx], dict):
+            raw_item = (raw_list[idx].get("item") or norm_item)
+        raw_spec = spec_in
+        if idx < len(raw_list) and isinstance(raw_list[idx], dict):
+            raw_spec = (raw_list[idx].get("spec") or spec_in)
+
+        # 生の名前 → 正規化名 の順でマスタ解決（別表記・item+spec結合も考慮）
+        _rid = _resolve_prod_id(raw_item, raw_spec) or _resolve_prod_id(norm_item, spec_in)
+        item_name = _name_by_prod.get(_rid, norm_item) if _rid else norm_item
         resolved_spec = _resolve_spec(item_name, entry.get("spec", ""))
         db_unit = _resolve_unit(item_name, resolved_spec)
         receipt_mode = _resolve_receipt_mode(item_name, resolved_spec)
