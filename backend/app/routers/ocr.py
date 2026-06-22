@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from PIL import Image
 
 from app.models import ParseRequest, ParseResponse, ParsedLine, VerifyRequest, VerifyResponse
-from app.services.ocr_parser import parse_order_image, parse_order_text, validate_and_fix_order_data
+from app.services.ocr_parser import parse_order_image, parse_order_text, validate_and_fix_order_data, _nk
 from app.services.supabase_client import get_supabase
 
 router = APIRouter()
@@ -205,9 +205,16 @@ async def parse_verification(req: ParseRequest):
 
     # DB から商品マスターを取得してスペックを自動補完
     tenant_id_for_parse = verif["tenant_id"]
-    _prod_rows = sb.table("products").select("id, name").eq("tenant_id", tenant_id_for_parse).execute()
+    _prod_rows = sb.table("products").select("id, name, alt_names").eq("tenant_id", tenant_id_for_parse).execute()
     _prod_by_name: Dict[str, str] = {r["name"].strip(): r["id"] for r in (_prod_rows.data or [])}
     _name_by_prod: Dict[str, str] = {r["id"]: r["name"].strip() for r in (_prod_rows.data or [])}
+    # 別表記（alt_names）→ product_id の正規化マップ。マスタUIで編集した別表記を解決に反映する。
+    _alias_norm: Dict[str, str] = {}
+    for r in (_prod_rows.data or []):
+        _alias_norm[_nk(r["name"])] = r["id"]
+        for a in (r.get("alt_names") or []):
+            if a and a.strip():
+                _alias_norm.setdefault(_nk(a), r["id"])
     _ps_rows = sb.table("product_standards").select("id, name, product_id, unit_size, receipt_mode").eq("tenant_id", tenant_id_for_parse).eq("is_active", True).execute()
     _ps_by_product: Dict[str, List[str]] = {}
     _unit_by_ps: Dict[str, int] = {}           # (product_id, spec_name) -> unit_size
@@ -217,19 +224,35 @@ async def parse_verification(req: ParseRequest):
         _unit_by_ps[(r["product_id"], r["name"].strip())] = r.get("unit_size") or 0
         _receipt_mode_by_ps[(r["product_id"], r["name"].strip())] = r.get("receipt_mode") or "総数入力"
 
-    def _resolve_prod_id(item: str) -> str | None:
-        """商品名から product_id を解決（完全一致→最長部分一致）。
-        AIが「胡瓜バラ(50本)」のように余分な接尾辞を付けても、
-        マスター名が含まれていれば最長一致（胡瓜＜胡瓜バラ）で解決する。"""
+    def _resolve_prod_id(item: str, spec: str = "") -> str | None:
+        """商品名から product_id を解決。
+        優先順:
+          1. 品目名の完全一致
+          2. 別表記(alt_names)の完全一致。AIが「トマト10k」を item=トマト + spec=10k に
+             分割しても、結合「トマト10k」が別表記に一致すれば トマトバラ に解決する。
+          3. マスター名が item に含まれる最長一致（胡瓜＜胡瓜バラ）
+          4. item がマスター名に含まれる（候補1件のみ）
+        """
         item_s = item.strip()
+        spec_s = (spec or "").strip()
+        # 1. 完全一致
         prod_id = _prod_by_name.get(item_s)
         if prod_id:
             return prod_id
-        # マスター名が item に含まれる → 最長（最も具体的）を優先
+        # 2. 別表記一致（結合を優先＝より具体的）
+        cand_keys = []
+        if spec_s:
+            cand_keys.append(_nk(item_s + spec_s))
+            cand_keys.append(_nk(item_s + " " + spec_s))
+        cand_keys.append(_nk(item_s))
+        for k in cand_keys:
+            if k and k in _alias_norm:
+                return _alias_norm[k]
+        # 3. マスター名が item に含まれる → 最長（最も具体的）を優先
         contained = [n for n in _prod_by_name if n and n in item_s]
         if contained:
             return _prod_by_name[max(contained, key=len)]
-        # item がマスター名に含まれる（AIが短く返した場合）→ 候補1件のみ採用
+        # 4. item がマスター名に含まれる（AIが短く返した場合）→ 候補1件のみ採用
         candidates = [n for n in _prod_by_name if item_s and item_s in n]
         if len(candidates) == 1:
             return _prod_by_name[candidates[0]]
@@ -291,8 +314,9 @@ async def parse_verification(req: ParseRequest):
     for entry in validated:
         item_name = entry.get("item", "")
         raw_item = item_name
-        # マスターに解決できたら正式な品目名に正規化（例: 胡瓜バラ(50本) → 胡瓜バラ）
-        _rid = _resolve_prod_id(item_name)
+        # マスターに解決できたら正式な品目名に正規化（別表記・item+spec結合も考慮）
+        # 例: item=トマト spec=10k → トマトバラ / 胡瓜バラ(50本) → 胡瓜バラ
+        _rid = _resolve_prod_id(item_name, entry.get("spec", ""))
         if _rid and _name_by_prod.get(_rid):
             item_name = _name_by_prod[_rid]
         resolved_spec = _resolve_spec(item_name, entry.get("spec", ""))

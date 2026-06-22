@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 
@@ -35,6 +36,11 @@ from app.services.prompt_manager import (
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
+
+def _nk(s: str) -> str:
+    """表記ゆれ吸収用の正規化キー: NFKC・小文字化・空白除去（k/K, 全半角を統一）。"""
+    return unicodedata.normalize("NFKC", (s or "")).lower().replace(" ", "").replace("　", "").strip()
+
 
 def safe_int(v: Any) -> int:
     """安全に整数へ変換"""
@@ -268,20 +274,39 @@ def validate_and_fix_order_data(
         # ── 品目名 ─────────────────────────────────────────────────────
         item_normalization = load_items()
         normalized_item: Optional[str] = None
-        # Pass1: 完全一致優先（"ネギバラ" が "長ネギ"の"ねぎ"に誤マッチするのを防ぐ）
-        for normalized, variants in item_normalization.items():
-            if item in variants:
-                normalized_item = normalized
+        spec_raw = str((entry.get("spec") or "")).strip()
+
+        # 照合候補（具体的な順）: AIが「トマト10k」を item=トマト + spec=10k に分割しても、
+        # 結合「トマト10k」が別表記に一致すれば正しく トマトバラ に解決できる。
+        candidates = []
+        if spec_raw:
+            candidates.append(item + spec_raw)   # トマト10k
+            candidates.append(item + " " + spec_raw)
+        candidates.append(item)                   # トマト
+
+        # Pass1: 完全一致（NFKC正規化後）。より具体的な候補（item+spec）を優先。
+        for cand in candidates:
+            cand_n = _nk(cand)
+            if not cand_n:
+                continue
+            for normalized, variants in item_normalization.items():
+                if _nk(normalized) == cand_n or any(_nk(v) == cand_n for v in variants):
+                    normalized_item = normalized
+                    break
+            if normalized_item:
                 break
-        # Pass2: 部分一致（最長マッチを優先して誤マッチを抑制）
+
+        # Pass2: 部分一致（最長マッチを優先して誤マッチを抑制）。結合文字列も対象。
         if not normalized_item:
+            haystack = _nk(item + spec_raw) if spec_raw else _nk(item)
             best_match: Optional[str] = None
             best_len = 0
             for normalized, variants in item_normalization.items():
                 for v in variants:
-                    if v in item and len(v) > best_len:
+                    v_n = _nk(v)
+                    if v_n and v_n in haystack and len(v_n) > best_len:
                         best_match = normalized
-                        best_len = len(v)
+                        best_len = len(v_n)
             normalized_item = best_match
         if not normalized_item and item:
             if auto_learn:
