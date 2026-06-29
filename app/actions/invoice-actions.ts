@@ -119,6 +119,7 @@ export async function updateInvoiceStatus(
 
 export type PreviewLine = {
   order_id: string
+  order_line_id?: string
   order_date: string
   product_name: string
   spec: string | null
@@ -132,46 +133,46 @@ export type PreviewLine = {
 
 export async function previewInvoice(customerId: string, billingMonth: string) {
   const sb = await createClient()
-  const company = await getCompanySettings()
-  const basis = company?.sales_basis ?? 'order_date'
   const [y, m] = billingMonth.split('-').map(Number)
   const start = `${y}-${String(m).padStart(2, '0')}-01`
-  const endDate = new Date(y, m, 0)
-  const end = endDate.toISOString().slice(0, 10)
+  const end = new Date(y, m, 0).toISOString().slice(0, 10)
 
-  const dateCol = basis === 'delivery_date' ? 'delivery_date' : 'order_date'
-
-  const { data, error } = await sb
-    .from('orders')
+  // 本番DBスキーマ: order_lines → product_standards → products
+  const { data, error } = await (sb as any)
+    .from('order_lines')
     .select(`
-      id, order_date, delivery_date, status,
-      order_items(id, product_name, spec, quantity, billable_qty, unit, unit_price, tax_rate, price_status)
+      id,
+      total_qty,
+      unit_price,
+      line_total,
+      orders!inner(id, order_date, status),
+      product_standards!inner(name, unit_type, products!inner(name))
     `)
     .eq('customer_id', customerId)
-    .in('status', ['approved', 'shipped', 'invoiced'])
-    .gte(dateCol, start)
-    .lte(dateCol, end)
+    .in('orders.status', ['verified', 'shipped'])
+    .gte('orders.order_date', start)
+    .lte('orders.order_date', end)
 
   if (error) return { success: false as const, error: error.message }
 
   const lines: PreviewLine[] = []
-  for (const order of data ?? []) {
-    for (const oi of (order.order_items as typeof order.order_items & { spec?: string | null }[])) {
-      const qty = Number(oi.billable_qty ?? oi.quantity)
-      const price = Number(oi.unit_price)
-      lines.push({
-        order_id: order.id,
-        order_date: order.order_date,
-        product_name: oi.product_name,
-        spec: (oi as { spec?: string | null }).spec ?? null,
-        quantity: Number(oi.quantity),
-        billable_qty: qty,
-        unit: oi.unit,
-        unit_price: price,
-        tax_rate: oi.tax_rate as 8 | 10,
-        subtotal: Math.round(qty * price),
-      })
-    }
+  for (const ol of data ?? []) {
+    const qty = Number(ol.total_qty ?? 0)
+    const price = Number(ol.unit_price ?? 0)
+    const subtotal = ol.line_total != null ? Number(ol.line_total) : Math.round(qty * price)
+    lines.push({
+      order_id: ol.orders.id,
+      order_line_id: ol.id,
+      order_date: ol.orders.order_date,
+      product_name: ol.product_standards.products.name,
+      spec: ol.product_standards.name,
+      quantity: qty,
+      billable_qty: qty,
+      unit: ol.product_standards.unit_type,
+      unit_price: price,
+      tax_rate: 8, // 農産物は軽減税率8%
+      subtotal,
+    })
   }
 
   lines.sort((a, b) => a.order_date.localeCompare(b.order_date) || a.product_name.localeCompare(b.product_name))
@@ -236,14 +237,16 @@ export async function createInvoice(input: {
 
   const itemRows = input.lines.map(l => ({
     invoice_id: inv.id,
+    order_line_id: l.order_line_id ?? null,
     product_name: l.product_name + (l.spec ? ` ${l.spec}` : ''),
     quantity: l.billable_qty,
     unit: l.unit,
     unit_price: l.unit_price,
     tax_rate: l.tax_rate,
+    subtotal: l.subtotal,
   }))
 
-  const { error: itemErr } = await sb.from('invoice_items').insert(itemRows)
+  const { error: itemErr } = await (sb as any).from('invoice_items').insert(itemRows)
   if (itemErr) {
     await sb.from('invoices').delete().eq('id', inv.id)
     return { success: false as const, error: itemErr.message }
