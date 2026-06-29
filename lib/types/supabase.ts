@@ -1,7 +1,5 @@
-// 本番環境では以下で自動生成して置き換えること:
-// npx supabase gen types typescript --project-id <project_id> > lib/types/supabase.ts
+// 自動生成 (supabase gen types typescript --project-id ggenmkcdwzpydbkpxpms)
 
-// ── JSON 型 ──────────────────────────────────────────────────
 export type Json =
   | string
   | number
@@ -10,495 +8,1592 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
-// ── Enum 型 ──────────────────────────────────────────────────
-export type UserRole = 'admin' | 'field_worker' | 'viewer'
-export type UnitType = '袋' | '本' | '箱' | '束' | 'kg' | '個'
-export type ReceiptMode = 'box_count' | 'total_count'
-export type OrderSource = 'ocr' | 'manual' | 'email' | 'sheets_sync'
-export type OrderStatus = 'pending' | 'verified' | 'shipped' | 'cancelled'
-export type OcrStatus = 'pending' | 'auto_accepted' | 'needs_review' | 'corrected' | 'rejected'
-
-// ── Supabase 内部型（GenericRelationship 互換） ───────────────
-type Relationship = {
-  foreignKeyName: string
-  columns: string[]
-  isOneToOne?: boolean
-  referencedRelation: string
-  referencedColumns: string[]
-}
-
-// ── Database 型 ───────────────────────────────────────────────
 export type Database = {
+  __InternalSupabase: {
+    PostgrestVersion: "14.5"
+  }
   public: {
     Tables: {
-      // テナント
-      tenants: {
+      app_settings: {
         Row: {
-          id: string
-          name: string
-          created_at: string
+          is_secret: boolean
+          key: string
+          updated_at: string
+          updated_by: string | null
+          value: string | null
         }
         Insert: {
-          id?: string
-          name: string
-          created_at?: string
+          is_secret?: boolean
+          key: string
+          updated_at?: string
+          updated_by?: string | null
+          value?: string | null
         }
         Update: {
-          id?: string
-          name?: string
+          is_secret?: boolean
+          key?: string
+          updated_at?: string
+          updated_by?: string | null
+          value?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "app_settings_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      audit_log: {
+        Row: {
+          action: string
+          changed_fields: string[] | null
+          created_at: string
+          entity_id: string
+          entity_type: string
+          id: string
+          new_values: Json | null
+          old_values: Json | null
+          user_id: string | null
+        }
+        Insert: {
+          action: string
+          changed_fields?: string[] | null
           created_at?: string
+          entity_id: string
+          entity_type: string
+          id?: string
+          new_values?: Json | null
+          old_values?: Json | null
+          user_id?: string | null
+        }
+        Update: {
+          action?: string
+          changed_fields?: string[] | null
+          created_at?: string
+          entity_id?: string
+          entity_type?: string
+          id?: string
+          new_values?: Json | null
+          old_values?: Json | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audit_log_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      company_settings: {
+        Row: {
+          address: string | null
+          bank_info: string | null
+          company_name: string
+          company_name_kana: string | null
+          created_at: string
+          email: string | null
+          fax: string | null
+          id: string
+          invoice_reg_num: string | null
+          postal_code: string | null
+          rounding_rule: string
+          sales_basis: string
+          tel: string | null
+          updated_at: string
+        }
+        Insert: {
+          address?: string | null
+          bank_info?: string | null
+          company_name?: string
+          company_name_kana?: string | null
+          created_at?: string
+          email?: string | null
+          fax?: string | null
+          id?: string
+          invoice_reg_num?: string | null
+          postal_code?: string | null
+          rounding_rule?: string
+          sales_basis?: string
+          tel?: string | null
+          updated_at?: string
+        }
+        Update: {
+          address?: string | null
+          bank_info?: string | null
+          company_name?: string
+          company_name_kana?: string | null
+          created_at?: string
+          email?: string | null
+          fax?: string | null
+          id?: string
+          invoice_reg_num?: string | null
+          postal_code?: string | null
+          rounding_rule?: string
+          sales_basis?: string
+          tel?: string | null
+          updated_at?: string
         }
         Relationships: []
       }
-
-      // プロファイル
-      profiles: {
+      customer_parse_hints: {
         Row: {
-          id: string
-          tenant_id: string
-          role: UserRole
-          display_name: string | null
+          corrected_name: string | null
           created_at: string
+          created_by: string | null
+          customer_id: string
+          hit_count: number
+          id: string
+          note: string | null
+          product_id: string | null
+          raw_name: string
+          updated_at: string
         }
         Insert: {
-          id: string
-          tenant_id: string
-          role?: UserRole
-          display_name?: string | null
+          corrected_name?: string | null
           created_at?: string
+          created_by?: string | null
+          customer_id: string
+          hit_count?: number
+          id?: string
+          note?: string | null
+          product_id?: string | null
+          raw_name: string
+          updated_at?: string
         }
         Update: {
-          id?: string
-          tenant_id?: string
-          role?: UserRole
-          display_name?: string | null
+          corrected_name?: string | null
           created_at?: string
+          created_by?: string | null
+          customer_id?: string
+          hit_count?: number
+          id?: string
+          note?: string | null
+          product_id?: string | null
+          raw_name?: string
+          updated_at?: string
         }
         Relationships: [
           {
-            foreignKeyName: 'profiles_tenant_id_fkey'
-            columns: ['tenant_id']
+            foreignKeyName: "customer_parse_hints_created_by_fkey"
+            columns: ["created_by"]
             isOneToOne: false
-            referencedRelation: 'tenants'
-            referencedColumns: ['id']
-          }
-        ]
-      }
-
-      // 商品
-      products: {
-        Row: {
-          id: string
-          tenant_id: string
-          name: string
-          alt_names: string[]
-          is_active: boolean
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          tenant_id: string
-          name: string
-          alt_names?: string[]
-          is_active?: boolean
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          tenant_id?: string
-          name?: string
-          alt_names?: string[]
-          is_active?: boolean
-          created_at?: string
-        }
-        Relationships: [
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
           {
-            foreignKeyName: 'products_tenant_id_fkey'
-            columns: ['tenant_id']
+            foreignKeyName: "customer_parse_hints_customer_id_fkey"
+            columns: ["customer_id"]
             isOneToOne: false
-            referencedRelation: 'tenants'
-            referencedColumns: ['id']
-          }
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "customer_parse_hints_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
         ]
       }
-
-      // 商品規格
-      product_standards: {
+      customer_product_rules: {
         Row: {
+          container_type: string | null
+          created_at: string | null
+          customer_id: string
+          default_quantity: number | null
+          fraction_policy: string | null
+          has_card: boolean
           id: string
-          tenant_id: string
+          is_default_set: boolean | null
+          label_spec: string | null
+          packing_notes: string | null
+          packs_per_case: number | null
           product_id: string
-          name: string
-          unit_size: number
-          unit_type: UnitType
-          receipt_mode: ReceiptMode
-          is_active: boolean
-          created_at: string
+          spec: string | null
+          tape_color: string | null
         }
         Insert: {
+          container_type?: string | null
+          created_at?: string | null
+          customer_id: string
+          default_quantity?: number | null
+          fraction_policy?: string | null
+          has_card?: boolean
           id?: string
-          tenant_id: string
+          is_default_set?: boolean | null
+          label_spec?: string | null
+          packing_notes?: string | null
+          packs_per_case?: number | null
           product_id: string
-          name: string
-          unit_size: number
-          unit_type: UnitType
-          receipt_mode?: ReceiptMode
-          is_active?: boolean
-          created_at?: string
+          spec?: string | null
+          tape_color?: string | null
         }
         Update: {
+          container_type?: string | null
+          created_at?: string | null
+          customer_id?: string
+          default_quantity?: number | null
+          fraction_policy?: string | null
+          has_card?: boolean
           id?: string
-          tenant_id?: string
+          is_default_set?: boolean | null
+          label_spec?: string | null
+          packing_notes?: string | null
+          packs_per_case?: number | null
           product_id?: string
-          name?: string
-          unit_size?: number
-          unit_type?: UnitType
-          receipt_mode?: ReceiptMode
-          is_active?: boolean
-          created_at?: string
+          spec?: string | null
+          tape_color?: string | null
         }
         Relationships: [
           {
-            foreignKeyName: 'product_standards_product_id_fkey'
-            columns: ['product_id']
+            foreignKeyName: "customer_product_rules_customer_id_fkey"
+            columns: ["customer_id"]
             isOneToOne: false
-            referencedRelation: 'products'
-            referencedColumns: ['id']
-          }
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "customer_product_rules_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
         ]
       }
-
-      // 顧客
       customers: {
         Row: {
-          id: string
-          tenant_id: string
-          name: string
-          store_code: string | null
-          is_active: boolean
+          channel_identifiers: Json
+          closing_rule: string
           created_at: string
-          sort_order: number | null
+          display_color: string | null
+          id: string
+          invoice_reg_num: string | null
+          is_active: boolean
+          name: string
+          name_kana: string | null
+          payment_terms: string | null
+          updated_at: string
         }
         Insert: {
-          id?: string
-          tenant_id: string
-          name: string
-          store_code?: string | null
-          is_active?: boolean
+          channel_identifiers?: Json
+          closing_rule?: string
           created_at?: string
-          sort_order?: number | null
+          display_color?: string | null
+          id?: string
+          invoice_reg_num?: string | null
+          is_active?: boolean
+          name: string
+          name_kana?: string | null
+          payment_terms?: string | null
+          updated_at?: string
         }
         Update: {
-          id?: string
-          tenant_id?: string
-          name?: string
-          store_code?: string | null
-          is_active?: boolean
+          channel_identifiers?: Json
+          closing_rule?: string
           created_at?: string
-          sort_order?: number | null
+          display_color?: string | null
+          id?: string
+          invoice_reg_num?: string | null
+          is_active?: boolean
+          name?: string
+          name_kana?: string | null
+          payment_terms?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      delivery_destinations: {
+        Row: {
+          aliases: string[]
+          code: string | null
+          created_at: string
+          customer_id: string
+          full_name: string
+          id: string
+          is_active: boolean
+          sort_order: number
+          updated_at: string
+        }
+        Insert: {
+          aliases?: string[]
+          code?: string | null
+          created_at?: string
+          customer_id: string
+          full_name: string
+          id?: string
+          is_active?: boolean
+          sort_order?: number
+          updated_at?: string
+        }
+        Update: {
+          aliases?: string[]
+          code?: string | null
+          created_at?: string
+          customer_id?: string
+          full_name?: string
+          id?: string
+          is_active?: boolean
+          sort_order?: number
+          updated_at?: string
         }
         Relationships: [
           {
-            foreignKeyName: 'customers_tenant_id_fkey'
-            columns: ['tenant_id']
+            foreignKeyName: "delivery_destinations_customer_id_fkey"
+            columns: ["customer_id"]
             isOneToOne: false
-            referencedRelation: 'tenants'
-            referencedColumns: ['id']
-          }
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
         ]
       }
-
-      // 単価マスタ（numeric → number, date → string）
-      price_master: {
+      delivery_note_counters: {
+        Row: { last_seq: number; month: string }
+        Insert: { last_seq?: number; month: string }
+        Update: { last_seq?: number; month?: string }
+        Relationships: []
+      }
+      delivery_note_items: {
         Row: {
-          id: string
-          tenant_id: string
-          customer_id: string
-          product_standard_id: string
-          unit_price: number            // numeric(10,2)
-          valid_from: string            // date → YYYY-MM-DD
-          valid_to: string | null       // date | null
-          created_by: string | null
           created_at: string
+          delivery_note_id: string
+          id: string
+          product_name: string
+          quantity: number
+          sort_order: number
+          subtotal: number
+          tax_rate: number
+          unit: string
+          unit_price: number
         }
         Insert: {
-          id?: string
-          tenant_id: string
-          customer_id: string
-          product_standard_id: string
-          unit_price: number
-          valid_from?: string
-          valid_to?: string | null
-          created_by?: string | null
           created_at?: string
+          delivery_note_id: string
+          id?: string
+          product_name: string
+          quantity: number
+          sort_order?: number
+          subtotal?: number
+          tax_rate: number
+          unit?: string
+          unit_price?: number
         }
         Update: {
-          id?: string
-          tenant_id?: string
-          customer_id?: string
-          product_standard_id?: string
-          unit_price?: number
-          valid_from?: string
-          valid_to?: string | null
-          created_by?: string | null
           created_at?: string
+          delivery_note_id?: string
+          id?: string
+          product_name?: string
+          quantity?: number
+          sort_order?: number
+          subtotal?: number
+          tax_rate?: number
+          unit?: string
+          unit_price?: number
         }
         Relationships: [
           {
-            foreignKeyName: 'price_master_customer_id_fkey'
-            columns: ['customer_id']
+            foreignKeyName: "delivery_note_items_delivery_note_id_fkey"
+            columns: ["delivery_note_id"]
             isOneToOne: false
-            referencedRelation: 'customers'
-            referencedColumns: ['id']
+            referencedRelation: "delivery_notes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      delivery_notes: {
+        Row: {
+          amount_mode: string
+          created_at: string
+          customer_id: string
+          customer_name: string
+          delivery_date: string
+          id: string
+          issued_at: string
+          issued_by: string | null
+          issuer_address: string | null
+          issuer_name: string | null
+          issuer_tel: string | null
+          note_number: string
+          subtotal_10: number
+          subtotal_8: number
+          total_amount: number
+        }
+        Insert: {
+          amount_mode?: string
+          created_at?: string
+          customer_id: string
+          customer_name: string
+          delivery_date: string
+          id?: string
+          issued_at?: string
+          issued_by?: string | null
+          issuer_address?: string | null
+          issuer_name?: string | null
+          issuer_tel?: string | null
+          note_number: string
+          subtotal_10?: number
+          subtotal_8?: number
+          total_amount?: number
+        }
+        Update: {
+          amount_mode?: string
+          created_at?: string
+          customer_id?: string
+          customer_name?: string
+          delivery_date?: string
+          id?: string
+          issued_at?: string
+          issued_by?: string | null
+          issuer_address?: string | null
+          issuer_name?: string | null
+          issuer_tel?: string | null
+          note_number?: string
+          subtotal_10?: number
+          subtotal_8?: number
+          total_amount?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "delivery_notes_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
           },
           {
-            foreignKeyName: 'price_master_product_standard_id_fkey'
-            columns: ['product_standard_id']
+            foreignKeyName: "delivery_notes_issued_by_fkey"
+            columns: ["issued_by"]
             isOneToOne: false
-            referencedRelation: 'product_standards'
-            referencedColumns: ['id']
-          }
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
         ]
       }
-
-      // 受注
+      gemini_usage_log: {
+        Row: {
+          called_at: string | null
+          channel: string | null
+          id: string
+          mode: string | null
+          success: boolean | null
+          tokens_used: number | null
+        }
+        Insert: {
+          called_at?: string | null
+          channel?: string | null
+          id?: string
+          mode?: string | null
+          success?: boolean | null
+          tokens_used?: number | null
+        }
+        Update: {
+          called_at?: string | null
+          channel?: string | null
+          id?: string
+          mode?: string | null
+          success?: boolean | null
+          tokens_used?: number | null
+        }
+        Relationships: []
+      }
+      harvest_estimates: {
+        Row: {
+          actual_qty: number | null
+          adjustment_memo: string | null
+          carry_over: number | null
+          created_by: string | null
+          estimate_date: string
+          estimate_qty: number | null
+          id: string
+          planned_qty: number | null
+          product_id: string
+          status: string
+          updated_at: string | null
+        }
+        Insert: {
+          actual_qty?: number | null
+          adjustment_memo?: string | null
+          carry_over?: number | null
+          created_by?: string | null
+          estimate_date: string
+          estimate_qty?: number | null
+          id?: string
+          planned_qty?: number | null
+          product_id: string
+          status?: string
+          updated_at?: string | null
+        }
+        Update: {
+          actual_qty?: number | null
+          adjustment_memo?: string | null
+          carry_over?: number | null
+          created_by?: string | null
+          estimate_date?: string
+          estimate_qty?: number | null
+          id?: string
+          planned_qty?: number | null
+          product_id?: string
+          status?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "harvest_estimates_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "harvest_estimates_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      harvest_tasks: {
+        Row: {
+          assigned_to: string | null
+          created_at: string
+          id: string
+          order_item_id: string | null
+          product_id: string
+          required_qty: number
+          status: string
+          task_date: string
+          updated_at: string
+        }
+        Insert: {
+          assigned_to?: string | null
+          created_at?: string
+          id?: string
+          order_item_id?: string | null
+          product_id: string
+          required_qty?: number
+          status?: string
+          task_date: string
+          updated_at?: string
+        }
+        Update: {
+          assigned_to?: string | null
+          created_at?: string
+          id?: string
+          order_item_id?: string | null
+          product_id?: string
+          required_qty?: number
+          status?: string
+          task_date?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "harvest_tasks_assigned_to_fkey"
+            columns: ["assigned_to"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "harvest_tasks_order_item_id_fkey"
+            columns: ["order_item_id"]
+            isOneToOne: false
+            referencedRelation: "order_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "harvest_tasks_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      invoice_counters: {
+        Row: { last_seq: number; month: string }
+        Insert: { last_seq?: number; month: string }
+        Update: { last_seq?: number; month?: string }
+        Relationships: []
+      }
+      invoice_items: {
+        Row: {
+          created_at: string
+          id: string
+          invoice_id: string
+          line_total: number | null
+          order_item_id: string | null
+          product_name: string
+          quantity: number
+          subtotal: number | null
+          tax_amount: number | null
+          tax_rate: number
+          unit: string
+          unit_price: number
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          invoice_id: string
+          line_total?: number | null
+          order_item_id?: string | null
+          product_name: string
+          quantity: number
+          subtotal?: number | null
+          tax_amount?: number | null
+          tax_rate: number
+          unit?: string
+          unit_price: number
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          invoice_id?: string
+          line_total?: number | null
+          order_item_id?: string | null
+          product_name?: string
+          quantity?: number
+          subtotal?: number | null
+          tax_amount?: number | null
+          tax_rate?: number
+          unit?: string
+          unit_price?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invoice_items_invoice_id_fkey"
+            columns: ["invoice_id"]
+            isOneToOne: false
+            referencedRelation: "invoices"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invoice_items_order_item_id_fkey"
+            columns: ["order_item_id"]
+            isOneToOne: false
+            referencedRelation: "order_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      invoices: {
+        Row: {
+          billing_month: string
+          created_at: string
+          created_by: string | null
+          customer_id: string
+          due_date: string | null
+          id: string
+          invoice_number: string
+          invoice_reg_num: string | null
+          issue_date: string | null
+          pdf_r2_key: string | null
+          period_end: string | null
+          period_start: string | null
+          status: string
+          subtotal_10: number
+          subtotal_8: number
+          tax_10: number
+          tax_8: number
+          total_amount: number
+          updated_at: string
+        }
+        Insert: {
+          billing_month: string
+          created_at?: string
+          created_by?: string | null
+          customer_id: string
+          due_date?: string | null
+          id?: string
+          invoice_number: string
+          invoice_reg_num?: string | null
+          issue_date?: string | null
+          pdf_r2_key?: string | null
+          period_end?: string | null
+          period_start?: string | null
+          status?: string
+          subtotal_10?: number
+          subtotal_8?: number
+          tax_10?: number
+          tax_8?: number
+          total_amount?: number
+          updated_at?: string
+        }
+        Update: {
+          billing_month?: string
+          created_at?: string
+          created_by?: string | null
+          customer_id?: string
+          due_date?: string | null
+          id?: string
+          invoice_number?: string
+          invoice_reg_num?: string | null
+          issue_date?: string | null
+          pdf_r2_key?: string | null
+          period_end?: string | null
+          period_start?: string | null
+          status?: string
+          subtotal_10?: number
+          subtotal_8?: number
+          tax_10?: number
+          tax_8?: number
+          total_amount?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invoices_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invoices_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      order_items: {
+        Row: {
+          billable_qty: number | null
+          billable_reason: string | null
+          confidence: number | null
+          container_type: string | null
+          created_at: string
+          field_note: string | null
+          field_status: string
+          fraction_note: string | null
+          has_card: boolean | null
+          id: string
+          is_flagged: boolean | null
+          line_note: string | null
+          line_total: number | null
+          order_id: string
+          pack_config_id: string | null
+          price_status: string
+          priced_at: string | null
+          priced_by: string | null
+          pricing_reference_date: string | null
+          product_id: string
+          product_name: string
+          quantity: number
+          quantity_raw: string | null
+          rule_id: string | null
+          shipped_at: string | null
+          shipped_qty: number | null
+          spec: string | null
+          spec_warnings: Json | null
+          subtotal: number | null
+          tax_amount: number | null
+          tax_rate: number
+          unit: string
+          unit_price: number
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          billable_qty?: number | null
+          billable_reason?: string | null
+          confidence?: number | null
+          container_type?: string | null
+          created_at?: string
+          field_note?: string | null
+          field_status?: string
+          fraction_note?: string | null
+          has_card?: boolean | null
+          id?: string
+          is_flagged?: boolean | null
+          line_note?: string | null
+          line_total?: number | null
+          order_id: string
+          pack_config_id?: string | null
+          price_status?: string
+          priced_at?: string | null
+          priced_by?: string | null
+          pricing_reference_date?: string | null
+          product_id: string
+          product_name: string
+          quantity: number
+          quantity_raw?: string | null
+          rule_id?: string | null
+          shipped_at?: string | null
+          shipped_qty?: number | null
+          spec?: string | null
+          spec_warnings?: Json | null
+          subtotal?: number | null
+          tax_amount?: number | null
+          tax_rate: number
+          unit?: string
+          unit_price: number
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          billable_qty?: number | null
+          billable_reason?: string | null
+          confidence?: number | null
+          container_type?: string | null
+          created_at?: string
+          field_note?: string | null
+          field_status?: string
+          fraction_note?: string | null
+          has_card?: boolean | null
+          id?: string
+          is_flagged?: boolean | null
+          line_note?: string | null
+          line_total?: number | null
+          order_id?: string
+          pack_config_id?: string | null
+          price_status?: string
+          priced_at?: string | null
+          priced_by?: string | null
+          pricing_reference_date?: string | null
+          product_id?: string
+          product_name?: string
+          quantity?: number
+          quantity_raw?: string | null
+          rule_id?: string | null
+          shipped_at?: string | null
+          shipped_qty?: number | null
+          spec?: string | null
+          spec_warnings?: Json | null
+          subtotal?: number | null
+          tax_amount?: number | null
+          tax_rate?: number
+          unit?: string
+          unit_price?: number
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_items_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_pack_config_id_fkey"
+            columns: ["pack_config_id"]
+            isOneToOne: false
+            referencedRelation: "pack_configs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_priced_by_fkey"
+            columns: ["priced_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_rule_id_fkey"
+            columns: ["rule_id"]
+            isOneToOne: false
+            referencedRelation: "customer_product_rules"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      order_receipts: {
+        Row: {
+          channel: string
+          created_at: string | null
+          customer_id: string | null
+          delivery_date: string | null
+          error_message: string | null
+          exact_hash: string | null
+          id: string
+          is_revision: boolean | null
+          message_id: string | null
+          next_retry_at: string | null
+          ocr_confidence: number | null
+          order_id: string | null
+          parent_id: string | null
+          r2_key: string | null
+          raw_payload: Json | null
+          received_at: string
+          retry_count: number | null
+          sender_date_key: string | null
+          status: string
+        }
+        Insert: {
+          channel: string
+          created_at?: string | null
+          customer_id?: string | null
+          delivery_date?: string | null
+          error_message?: string | null
+          exact_hash?: string | null
+          id?: string
+          is_revision?: boolean | null
+          message_id?: string | null
+          next_retry_at?: string | null
+          ocr_confidence?: number | null
+          order_id?: string | null
+          parent_id?: string | null
+          r2_key?: string | null
+          raw_payload?: Json | null
+          received_at?: string
+          retry_count?: number | null
+          sender_date_key?: string | null
+          status?: string
+        }
+        Update: {
+          channel?: string
+          created_at?: string | null
+          customer_id?: string | null
+          delivery_date?: string | null
+          error_message?: string | null
+          exact_hash?: string | null
+          id?: string
+          is_revision?: boolean | null
+          message_id?: string | null
+          next_retry_at?: string | null
+          ocr_confidence?: number | null
+          order_id?: string | null
+          parent_id?: string | null
+          r2_key?: string | null
+          raw_payload?: Json | null
+          received_at?: string
+          retry_count?: number | null
+          sender_date_key?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_receipts_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_receipts_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_receipts_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "order_receipts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       orders: {
         Row: {
-          id: string
-          tenant_id: string
-          order_date: string            // date → YYYY-MM-DD
-          source: OrderSource
-          status: OrderStatus
-          notes: string | null
+          confirmed_no_order: boolean | null
+          created_at: string
           created_by: string | null
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          tenant_id: string
-          order_date?: string
-          source: OrderSource
-          status?: OrderStatus
-          notes?: string | null
-          created_by?: string | null
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          tenant_id?: string
-          order_date?: string
-          source?: OrderSource
-          status?: OrderStatus
-          notes?: string | null
-          created_by?: string | null
-          created_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: 'orders_tenant_id_fkey'
-            columns: ['tenant_id']
-            isOneToOne: false
-            referencedRelation: 'tenants'
-            referencedColumns: ['id']
-          }
-        ]
-      }
-
-      // 受注明細
-      order_lines: {
-        Row: {
+          customer_id: string
+          delivery_date: string | null
+          delivery_date_source: string | null
+          destination_id: string | null
           id: string
-          tenant_id: string
-          order_id: string
-          customer_id: string
-          product_standard_id: string
-          boxes: number
-          remainder: number
-          total_qty: number
-          unit_price: number | null     // numeric(10,2)
-          line_total: number | null     // numeric(10,2)
-          created_at: string
+          note: string | null
+          order_date: string
+          shipping_time: string | null
+          source: string
+          status: string
+          updated_at: string
         }
         Insert: {
-          id?: string
-          tenant_id: string
-          order_id: string
-          customer_id: string
-          product_standard_id: string
-          boxes?: number
-          remainder?: number
-          total_qty: number
-          unit_price?: number | null
-          line_total?: number | null
+          confirmed_no_order?: boolean | null
           created_at?: string
+          created_by?: string | null
+          customer_id: string
+          delivery_date?: string | null
+          delivery_date_source?: string | null
+          destination_id?: string | null
+          id?: string
+          note?: string | null
+          order_date?: string
+          shipping_time?: string | null
+          source: string
+          status?: string
+          updated_at?: string
         }
         Update: {
-          id?: string
-          tenant_id?: string
-          order_id?: string
+          confirmed_no_order?: boolean | null
+          created_at?: string
+          created_by?: string | null
           customer_id?: string
-          product_standard_id?: string
-          boxes?: number
-          remainder?: number
-          total_qty?: number
-          unit_price?: number | null
-          line_total?: number | null
-          created_at?: string
+          delivery_date?: string | null
+          delivery_date_source?: string | null
+          destination_id?: string | null
+          id?: string
+          note?: string | null
+          order_date?: string
+          shipping_time?: string | null
+          source?: string
+          status?: string
+          updated_at?: string
         }
         Relationships: [
           {
-            foreignKeyName: 'order_lines_order_id_fkey'
-            columns: ['order_id']
+            foreignKeyName: "orders_created_by_fkey"
+            columns: ["created_by"]
             isOneToOne: false
-            referencedRelation: 'orders'
-            referencedColumns: ['id']
+            referencedRelation: "users"
+            referencedColumns: ["id"]
           },
           {
-            foreignKeyName: 'order_lines_customer_id_fkey'
-            columns: ['customer_id']
+            foreignKeyName: "orders_customer_id_fkey"
+            columns: ["customer_id"]
             isOneToOne: false
-            referencedRelation: 'customers'
-            referencedColumns: ['id']
-          }
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "orders_destination_id_fkey"
+            columns: ["destination_id"]
+            isOneToOne: false
+            referencedRelation: "delivery_destinations"
+            referencedColumns: ["id"]
+          },
         ]
       }
-
-      // OCR 検証
-      ocr_verifications: {
+      pack_configs: {
         Row: {
-          id: string
-          tenant_id: string
-          order_id: string | null
-          image_url: string
-          raw_ocr_json: Json
-          parsed_lines: Json            // ParsedOcrLine[] として扱う
-          confidence_flags: Json
-          status: OcrStatus
-          reviewed_by: string | null
-          reviewed_at: string | null
-          correction_notes: string | null
+          base_per_selling: number
           created_at: string
+          customer_id: string | null
+          id: string
+          inner_per: number | null
+          inner_unit_label: string | null
+          is_active: boolean
+          label: string
+          needs_manual_confirm: boolean
+          outer_per: number | null
+          outer_unit_label: string | null
+          product_id: string
+          selling_unit_label: string
         }
         Insert: {
-          id?: string
-          tenant_id: string
-          order_id?: string | null
-          image_url: string
-          raw_ocr_json: Json
-          parsed_lines?: Json
-          confidence_flags?: Json
-          status?: OcrStatus
-          reviewed_by?: string | null
-          reviewed_at?: string | null
-          correction_notes?: string | null
+          base_per_selling: number
           created_at?: string
+          customer_id?: string | null
+          id?: string
+          inner_per?: number | null
+          inner_unit_label?: string | null
+          is_active?: boolean
+          label: string
+          needs_manual_confirm?: boolean
+          outer_per?: number | null
+          outer_unit_label?: string | null
+          product_id: string
+          selling_unit_label: string
         }
         Update: {
-          id?: string
-          tenant_id?: string
-          order_id?: string | null
-          image_url?: string
-          raw_ocr_json?: Json
-          parsed_lines?: Json
-          confidence_flags?: Json
-          status?: OcrStatus
-          reviewed_by?: string | null
-          reviewed_at?: string | null
-          correction_notes?: string | null
+          base_per_selling?: number
           created_at?: string
+          customer_id?: string | null
+          id?: string
+          inner_per?: number | null
+          inner_unit_label?: string | null
+          is_active?: boolean
+          label?: string
+          needs_manual_confirm?: boolean
+          outer_per?: number | null
+          outer_unit_label?: string | null
+          product_id?: string
+          selling_unit_label?: string
         }
         Relationships: [
           {
-            foreignKeyName: 'ocr_verifications_tenant_id_fkey'
-            columns: ['tenant_id']
+            foreignKeyName: "pack_configs_customer_id_fkey"
+            columns: ["customer_id"]
             isOneToOne: false
-            referencedRelation: 'tenants'
-            referencedColumns: ['id']
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
           },
           {
-            foreignKeyName: 'ocr_verifications_reviewed_by_fkey'
-            columns: ['reviewed_by']
+            foreignKeyName: "pack_configs_product_id_fkey"
+            columns: ["product_id"]
             isOneToOne: false
-            referencedRelation: 'profiles'
-            referencedColumns: ['id']
+            referencedRelation: "products"
+            referencedColumns: ["id"]
           },
-          {
-            foreignKeyName: 'ocr_verifications_order_id_fkey'
-            columns: ['order_id']
-            isOneToOne: false
-            referencedRelation: 'orders'
-            referencedColumns: ['id']
-          }
         ]
       }
-
-      // 監査ログ（id は bigint generated always → 挿入不可）
-      audit_logs: {
+      price_rules: {
         Row: {
-          id: number
-          tenant_id: string
-          table_name: string
-          record_id: string
-          operation: string
-          old_values: Json | null
-          new_values: Json | null
-          changed_by: string | null
-          changed_at: string
+          channel: string | null
+          created_at: string
+          created_by: string | null
+          customer_id: string | null
+          effective_from: string
+          effective_to: string | null
+          id: string
+          note: string | null
+          pack_config_id: string | null
+          price_unit: string
+          product_id: string
+          tax_rate: number
+          unit_price: number
         }
-        Insert: never                   // generated always as identity のため挿入不可
-        Update: never
+        Insert: {
+          channel?: string | null
+          created_at?: string
+          created_by?: string | null
+          customer_id?: string | null
+          effective_from: string
+          effective_to?: string | null
+          id?: string
+          note?: string | null
+          pack_config_id?: string | null
+          price_unit?: string
+          product_id: string
+          tax_rate: number
+          unit_price: number
+        }
+        Update: {
+          channel?: string | null
+          created_at?: string
+          created_by?: string | null
+          customer_id?: string | null
+          effective_from?: string
+          effective_to?: string | null
+          id?: string
+          note?: string | null
+          pack_config_id?: string | null
+          price_unit?: string
+          product_id?: string
+          tax_rate?: number
+          unit_price?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "price_rules_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "price_rules_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "price_rules_pack_config_id_fkey"
+            columns: ["pack_config_id"]
+            isOneToOne: false
+            referencedRelation: "pack_configs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "price_rules_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      products: {
+        Row: {
+          aliases: string[]
+          base_unit: string
+          container_capacity: number | null
+          created_at: string
+          default_tax_rate: number
+          default_unit_price: number | null
+          id: string
+          is_active: boolean
+          name: string
+          name_kana: string | null
+          photo_url: string | null
+          stock_qty: number
+          unit: string
+          updated_at: string
+        }
+        Insert: {
+          aliases?: string[]
+          base_unit?: string
+          container_capacity?: number | null
+          created_at?: string
+          default_tax_rate?: number
+          default_unit_price?: number | null
+          id?: string
+          is_active?: boolean
+          name: string
+          name_kana?: string | null
+          photo_url?: string | null
+          stock_qty?: number
+          unit?: string
+          updated_at?: string
+        }
+        Update: {
+          aliases?: string[]
+          base_unit?: string
+          container_capacity?: number | null
+          created_at?: string
+          default_tax_rate?: number
+          default_unit_price?: number | null
+          id?: string
+          is_active?: boolean
+          name?: string
+          name_kana?: string | null
+          photo_url?: string | null
+          stock_qty?: number
+          unit?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      spec_reports: {
+        Row: {
+          created_at: string
+          customer_id: string | null
+          handled_at: string | null
+          handled_by: string | null
+          id: string
+          note: string
+          photo_url: string | null
+          product_id: string | null
+          reported_by: string | null
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          customer_id?: string | null
+          handled_at?: string | null
+          handled_by?: string | null
+          id?: string
+          note: string
+          photo_url?: string | null
+          product_id?: string | null
+          reported_by?: string | null
+          status?: string
+        }
+        Update: {
+          created_at?: string
+          customer_id?: string | null
+          handled_at?: string | null
+          handled_by?: string | null
+          id?: string
+          note?: string
+          photo_url?: string | null
+          product_id?: string | null
+          reported_by?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "spec_reports_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "spec_reports_handled_by_fkey"
+            columns: ["handled_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "spec_reports_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "spec_reports_reported_by_fkey"
+            columns: ["reported_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      users: {
+        Row: {
+          created_at: string
+          email: string | null
+          full_name: string | null
+          id: string
+          role: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id: string
+          role?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id?: string
+          role?: string
+          updated_at?: string
+        }
         Relationships: []
       }
     }
-
     Views: {
+      v_ops_status: {
+        Row: {
+          approved_count: number | null
+          pending_review_count: number | null
+          shipped_count: number | null
+          today_deliveries: number | null
+          today_orders: number | null
+        }
+        Relationships: []
+      }
+      v_sales_by_customer: {
+        Row: {
+          customer_name: string | null
+          month: string | null
+          order_count: number | null
+          subtotal_excl_tax: number | null
+          total_incl_tax: number | null
+        }
+        Relationships: []
+      }
+      v_sales_by_item: {
+        Row: {
+          month: string | null
+          product_name: string | null
+          subtotal_excl_tax: number | null
+          total_incl_tax: number | null
+          total_qty: number | null
+          unit: string | null
+        }
+        Relationships: []
+      }
+      v_sales_monthly: {
+        Row: {
+          customer_count: number | null
+          month: string | null
+          order_count: number | null
+          subtotal_excl_tax: number | null
+          total_incl_tax: number | null
+          total_tax: number | null
+        }
+        Relationships: []
+      }
+    }
+    Functions: {
+      get_next_delivery_note_number: {
+        Args: { p_month: string }
+        Returns: number
+      }
+      get_next_invoice_number: { Args: { p_month: string }; Returns: number }
+      is_admin: { Args: never; Returns: boolean }
+    }
+    Enums: {
       [_ in never]: never
     }
-
-    Functions: {
-      // OCR 承認 RPC（service_role のみ実行可）
-      approve_ocr_verification: {
-        Args: {
-          p_verification_id: string
-          p_tenant_id: string
-          p_reviewed_by: string
-          p_order_date: string          // date 型：YYYY-MM-DD
-          p_correction_notes: string | null
-          p_lines: Json                 // CorrectedLine[] を JSON として渡す
-        }
-        Returns: string                 // 作成された order.id (uuid)
-      }
-      // 認証ユーザーのテナント ID を返すヘルパー
-      current_tenant_id: {
-        Args: Record<PropertyKey, never>
-        Returns: string
-      }
-    }
-
-    Enums: {
-      user_role: UserRole
-      unit_type: UnitType
-      receipt_mode: ReceiptMode
-      order_source: OrderSource
-      order_status: OrderStatus
-      ocr_status: OcrStatus
-    }
-
     CompositeTypes: {
       [_ in never]: never
     }
   }
 }
 
-// ── 便利な Row 型ショートカット ────────────────────────────────
-type Tables = Database['public']['Tables']
-export type TenantRow          = Tables['tenants']['Row']
-export type ProfileRow         = Tables['profiles']['Row']
-export type ProductRow         = Tables['products']['Row']
-export type ProductStandardRow = Tables['product_standards']['Row']
-export type CustomerRow        = Tables['customers']['Row']
-export type PriceMasterRow     = Tables['price_master']['Row']
-export type OrderRow           = Tables['orders']['Row']
-export type OrderLineRow       = Tables['order_lines']['Row']
-export type OcrVerificationRow = Tables['ocr_verifications']['Row']
-export type AuditLogRow        = Tables['audit_logs']['Row']
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
+
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
+
+export const Constants = {
+  public: {
+    Enums: {},
+  },
+} as const
+
+// ─── 後方互換エイリアス ─────────────────────────────────────────────────────
+// 旧バージョンのsupabase.tsにあった型エイリアスを再定義。新規コードでは使わない。
+
+// 現行DBカラム＋旧スキーマカラム（UI互換のためoptionalで保持）
+export type CustomerRow = Database['public']['Tables']['customers']['Row'] & {
+  store_code?: string | null
+  sort_order?: number | null
+  tenant_id?: string | null
+  fax?: string | null
+  tel?: string | null
+  address?: string | null
+  postal_code?: string | null
+}
+export type ProductRow = Database['public']['Tables']['products']['Row'] & {
+  tenant_id?: string | null
+  category?: string | null
+  default_tax_rate?: number | null
+  alt_names?: string[] | null
+}
+export type OrderRow = Database['public']['Tables']['orders']['Row'] & {
+  tenant_id?: string | null
+}
+export type OrderItemRow = Database['public']['Tables']['order_items']['Row'] & {
+  tenant_id?: string | null
+}
+export type PriceMasterRow = Database['public']['Tables']['customer_product_rules']['Row'] & {
+  tenant_id?: string | null
+  product_name?: string | null
+  customer_name?: string | null
+}
+export type InvoiceRow = Database['public']['Tables']['invoices']['Row']
+
+// 旧DBに存在したがマイグレーション後に削除されたテーブルのプレースホルダー型
+export type ProfileRow = Record<string, unknown> & {
+  id?: string
+  role?: string
+  tenant_id?: string
+  display_name?: string | null
+}
+export type ProductStandardRow = {
+  id: string
+  product_id: string
+  name: string
+  unit_size: number
+  is_active: boolean
+  tenant_id?: string
+  [key: string]: unknown
+}
+export type OcrStatus = 'pending' | 'processing' | 'done' | 'error' | 'review_needed' | 'approved'
+export type UnitType = string
+export type ReceiptMode = string

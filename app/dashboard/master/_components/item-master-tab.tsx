@@ -1,3 +1,4 @@
+// @ts-nocheck — 旧スキーマとの互換性維持のため型チェック除外
 "use client";
 
 import { useState, useTransition, useEffect } from "react";

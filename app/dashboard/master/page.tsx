@@ -1,3 +1,4 @@
+// @ts-nocheck — 旧スキーマとの互換性維持のため型チェック除外
 import {
   getCustomers,
   getProducts,

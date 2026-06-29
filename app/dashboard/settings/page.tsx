@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { PromptConfigCard } from "./_components/prompt-config-card";
+import { CompanySettingsCard } from "./_components/company-settings-card";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -361,6 +362,9 @@ export default function SettingsPage() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* 会社情報 */}
+      <CompanySettingsCard />
 
       {/* AI プロンプト設定 */}
       <PromptConfigCard />
