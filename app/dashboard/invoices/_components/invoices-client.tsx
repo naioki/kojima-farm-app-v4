@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, ReceiptText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Invoice, InvoiceItem } from "@/app/actions/invoice-actions";
@@ -170,8 +170,12 @@ export function InvoicesClient({
       </div>
 
       {invoices.length === 0 ? (
-        <div className="rounded-lg border p-8 text-center text-muted-foreground text-sm">
-          請求書がありません
+        <div className="rounded-xl border border-dashed bg-card p-12 text-center">
+          <ReceiptText className="w-10 h-10 mx-auto text-muted-foreground/40 mb-3" />
+          <p className="text-sm font-medium mb-1">請求書がまだありません</p>
+          <p className="text-xs text-muted-foreground">
+            右上の「新規作成」から、受注データをもとに請求書を作成できます
+          </p>
         </div>
       ) : (
         <div className="rounded-lg border overflow-x-auto">
