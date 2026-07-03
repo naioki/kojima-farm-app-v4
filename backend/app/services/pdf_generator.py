@@ -224,7 +224,7 @@ class LabelPDFGenerator:
     # 紙の出荷表と同じ様式: 供給先/品目/量目/数量(ケース・端数・合計)/出荷日/圃場番号/生産者名
     # 1供給先×1明細 = A4 1枚。パック時に離れた場所から読めるよう大きな文字で描画する。
 
-    PRODUCER_NAME = "小島利雄"
+    PRODUCER_NAME = ""  # 手書き記入するため空欄
 
     def generate_shipping_form_pdf(self, entries: List[Dict], shipment_date: str,
                                    output_path: str):
@@ -288,7 +288,6 @@ class LabelPDFGenerator:
             # 数量は2行構成のため特別扱い（値は None）
             ("数量", None, 40, 0),
             ("出荷日", f"{month} 月　{day} 日", 24, 26),
-            ("圃場番号", "　　　　番", 22, 20),
             ("生産者名", self.PRODUCER_NAME, 26, 26),
         ]
 
