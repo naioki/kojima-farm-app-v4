@@ -134,18 +134,16 @@ class LabelPDFGenerator:
         return rearranged
     
     def generate_pdf(self, labels: List[Dict], summary_data: List[Dict],
-                    shipment_date: str, output_path: str,
-                    summary_title: str = None):
+                    shipment_date: str, output_path: str):
         """
         PDFを生成（複数ページ対応 + 出荷一覧表）
         Cut and Stack形式: 裁断後に重ねるだけで順番が揃う
 
         Args:
-            labels: ラベル情報のリスト（全ラベル）。空リストなら一覧表のみ出力
+            labels: ラベル情報のリスト（全ラベル）
             summary_data: 出荷一覧表用のデータ
             shipment_date: 出荷日（YYYY-MM-DD形式）
             output_path: 出力PDFファイルパス
-            summary_title: 一覧表タイトルの上書き（品目別出荷票等）。None なら既存表記
         """
         c = canvas.Canvas(output_path, pagesize=(self.A4_WIDTH, self.A4_HEIGHT))
         font_name = self._get_font_name()
@@ -156,13 +154,7 @@ class LabelPDFGenerator:
         shipment_date_display = f"{shipment_date_obj.month}月{shipment_date_obj.day}日"  # 口数と区別するため漢字表記
 
         # 1ページ目：出荷一覧表
-        self._draw_summary_page(c, summary_data, shipment_date, font_name,
-                                summary_title=summary_title)
-
-        # ラベルがない場合（一覧表のみのPDF）は空白ページを作らない
-        if not labels:
-            c.save()
-            return
+        self._draw_summary_page(c, summary_data, shipment_date, font_name)
 
         # 出荷一覧表の後に改ページ（ラベルページと分離）
         c.showPage()
@@ -228,9 +220,119 @@ class LabelPDFGenerator:
         
         c.save()
     
+    # ─── 品目別出荷票（パック作業用の「出荷表」カード） ──────────────────────
+    # 紙の出荷表と同じ様式: 供給先/品目/量目/数量(ケース・端数・合計)/出荷日/圃場番号/生産者名
+    # 1供給先×1明細 = A4 1枚。パック時に離れた場所から読めるよう大きな文字で描画する。
+
+    PRODUCER_NAME = "小島利雄"
+
+    def generate_shipping_form_pdf(self, entries: List[Dict], shipment_date: str,
+                                   output_path: str):
+        """
+        出荷表カード PDF を生成（1明細 = 1ページ）。
+
+        Args:
+            entries: [{store, item, spec, unit, boxes, remainder, total_quantity,
+                       unit_label}] のリスト
+            shipment_date: 出荷日（YYYY-MM-DD）
+            output_path: 出力先
+        """
+        from datetime import datetime
+        dt = datetime.strptime(shipment_date, "%Y-%m-%d")
+
+        c = canvas.Canvas(output_path, pagesize=(self.A4_WIDTH, self.A4_HEIGHT))
+        font_name = self._get_font_name()
+
+        for i, e in enumerate(entries):
+            if i > 0:
+                c.showPage()
+            self._draw_shipping_form(c, e, dt.month, dt.day, font_name)
+
+        c.save()
+
+    def _draw_shipping_form(self, c: canvas.Canvas, e: Dict, month: int, day: int,
+                            font_name: str):
+        """紙の出荷表と同じレイアウトで1ページ描画"""
+        c.setFillColor(black)
+        c.setStrokeColor(black)
+        c.setLineWidth(1.2)
+
+        # タイトル
+        c.setFont(font_name, 30)
+        c.drawCentredString(self.A4_WIDTH / 2, self.A4_HEIGHT - 28 * mm, "出　荷　表")
+
+        # 表の枠
+        x0, x1 = 22 * mm, 188 * mm
+        label_x = 62 * mm  # ラベル列の右端
+        top_y = self.A4_HEIGHT - 40 * mm
+
+        unit = int(e.get("unit", 0) or 0)
+        boxes = int(e.get("boxes", 0) or 0)
+        remainder = int(e.get("remainder", 0) or 0)
+        total = e.get("total_quantity", 0)
+        unit_label = e.get("unit_label", "") or ""
+        spec = (e.get("spec") or "").strip()
+
+        # 量目: 規格名と入数（例: 3本P ・ 40本入）
+        ryome_parts = []
+        if spec:
+            ryome_parts.append(spec)
+        if unit > 0:
+            ryome_parts.append(f"{unit}{unit_label}入")
+        ryome = "　".join(ryome_parts) if ryome_parts else "—"
+
+        rows = [
+            ("供給先", str(e.get("store", "")), 34, 40),
+            ("品目", str(e.get("item", "")), 34, 40),
+            ("量目", ryome, 26, 26),
+            # 数量は2行構成のため特別扱い（値は None）
+            ("数量", None, 40, 0),
+            ("出荷日", f"{month} 月　{day} 日", 24, 26),
+            ("圃場番号", "　　　　番", 22, 20),
+            ("生産者名", self.PRODUCER_NAME, 26, 26),
+        ]
+
+        y = top_y
+        label_font_size = 18
+        for label, value, height_mm, max_font in rows:
+            h = height_mm * mm
+            cell_y = y - h
+
+            # 行の枠線
+            c.setLineWidth(1.2)
+            c.rect(x0, cell_y, x1 - x0, h, stroke=1, fill=0)
+            c.line(label_x, cell_y, label_x, cell_y + h)
+
+            # ラベル
+            c.setFont(font_name, label_font_size)
+            c.drawString(x0 + 5 * mm, cell_y + h / 2 - label_font_size * 0.35, label)
+
+            value_w = x1 - label_x
+            if label == "数量":
+                # 上段: ケース / 端数 / pc、下段: 合計
+                mid = cell_y + h / 2
+                c.setLineWidth(0.4)
+                c.setDash([2, 2])
+                c.line(label_x, mid, x1, mid)
+                c.setDash()
+                line1 = f"ケース {boxes}　　端数 {remainder}"
+                total_disp = f"{total}{unit_label}" if unit_label else str(total)
+                line2 = f"合計 {total_disp}"
+                fs, tw, th = self._draw_text_in_quadrant(c, line1, font_name, 26, value_w * 0.95, h / 2)
+                c.setFont(font_name, fs)
+                c.drawCentredString(label_x + value_w / 2, mid + (h / 2 - th) / 2, line1)
+                fs, tw, th = self._draw_text_in_quadrant(c, line2, font_name, 30, value_w * 0.95, h / 2)
+                c.setFont(font_name, fs)
+                c.drawCentredString(label_x + value_w / 2, cell_y + (h / 2 - th) / 2, line2)
+            else:
+                fs, tw, th = self._draw_text_in_quadrant(c, value, font_name, max_font, value_w * 0.92, h)
+                c.setFont(font_name, fs)
+                c.drawCentredString(label_x + value_w / 2, cell_y + (h - th) / 2, value)
+
+            y = cell_y
+
     def _draw_summary_page(self, c: canvas.Canvas, summary_data: List[Dict],
-                          raw_shipment_date: str, font_name: str,
-                          summary_title: str = None):
+                          raw_shipment_date: str, font_name: str):
         """出荷一覧表ページを描画（TableオブジェクトとTableStyleを使用）"""
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.platypus import Paragraph
@@ -253,8 +355,7 @@ class LabelPDFGenerator:
 
         # タイトル（上マージン最小限に）
         c.setFont(font_name, title_font_size)
-        title_text = summary_title if summary_title else f"【出荷一覧表】 {display_date_str}"
-        c.drawString(10 * mm, self.A4_HEIGHT - 22 * mm, title_text)
+        c.drawString(10 * mm, self.A4_HEIGHT - 22 * mm, f"【出荷一覧表】 {display_date_str}")
 
         # 店舗別コンテナ合計を事前計算（順序保持）
         store_containers: "OrderedDict[str, int]" = OrderedDict()

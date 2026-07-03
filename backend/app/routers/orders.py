@@ -134,36 +134,30 @@ async def list_orders(limit: int = 50, offset: int = 0):
 
 @router.get("/shipping-sheet/pdf")
 async def download_shipping_sheet_pdf(
-    date_from: date,
-    date_to: date,
+    target_date: date,
     product_id: str | None = None,
-    include_labels: bool = False,
 ):
     """
-    期間×品目フィルタ付きの出荷一覧表 PDF（品目別出荷票）。
-    - product_id 省略時は全品目（期間版の汎用出荷票）
-    - 同一 (店舗, 品目, 規格, 入数) は複数注文をまたいで合算
-    - 既定ではラベルページなし（一覧表1ページのみ）
+    品目別出荷票（パック作業用の「出荷表」カード）PDF。
+    - 指定日の注文を対象（単日。パック時に使うため範囲指定は不要）
+    - product_id 省略時は全品目
+    - 同一 (店舗, 品目, 規格, 入数) は複数注文をまたいで合算し、1明細=1ページの出荷表にする
     """
     from app.services.shipping_sheet import aggregate_order_data
 
-    if date_to < date_from:
-        raise HTTPException(status_code=400, detail="date_to must be >= date_from")
-
     sb = get_supabase()
 
-    # 期間内の注文（キャンセル除外）
+    # 指定日の注文（キャンセル除外）
     orders_rows = (
         sb.table("orders")
         .select("id, order_date")
-        .gte("order_date", date_from.isoformat())
-        .lte("order_date", date_to.isoformat())
+        .eq("order_date", target_date.isoformat())
         .neq("status", "cancelled")
         .execute()
     )
     order_ids = [r["id"] for r in (orders_rows.data or [])]
     if not order_ids:
-        raise HTTPException(status_code=404, detail="期間内に該当する注文がありません")
+        raise HTTPException(status_code=404, detail="指定日に該当する注文がありません")
 
     lines_rows = (
         sb.table("order_lines")
@@ -216,18 +210,11 @@ async def download_shipping_sheet_pdf(
         })
 
     if not order_data:
-        raise HTTPException(status_code=404, detail="期間内に該当する品目の注文がありません")
+        raise HTTPException(status_code=404, detail="指定日に該当する品目の注文がありません")
 
+    # 合算 → 出荷一覧表と同じ集計形式（total_quantity / unit_label 付き）に変換
     merged = aggregate_order_data(order_data)
-    summary_data = generate_summary_table(merged)
-    labels = generate_labels_from_data(merged, date_from.isoformat()) if include_labels else []
-
-    # タイトル: 【出荷一覧表（トマト）】 7月3日〜7月5日（単日は既存表記と同一見た目）
-    def _jp(d: date) -> str:
-        return f"{d.month}月{d.day}日"
-    period = _jp(date_from) if date_from == date_to else f"{_jp(date_from)}〜{_jp(date_to)}"
-    item_part = f"（{product_name}）" if product_name else ""
-    summary_title = f"【出荷一覧表{item_part}】 {period}"
+    entries = generate_summary_table(merged)
 
     from app.services.pdf_generator import LabelPDFGenerator
 
@@ -235,15 +222,14 @@ async def download_shipping_sheet_pdf(
         tmp_path = tmp.name
     try:
         generator = LabelPDFGenerator(font_path=_FONT_PATH)
-        generator.generate_pdf(labels, summary_data, date_from.isoformat(), tmp_path,
-                               summary_title=summary_title)
+        generator.generate_shipping_form_pdf(entries, target_date.isoformat(), tmp_path)
         with open(tmp_path, "rb") as f:
             pdf_bytes = f.read()
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-    filename = f"shipping_sheet_{date_from.isoformat()}_{date_to.isoformat()}.pdf"
+    filename = f"shipping_form_{target_date.isoformat()}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",

@@ -41,8 +41,7 @@ export function ItemSheetDialog() {
   const [open, setOpen] = useState(false);
   const [products, setProducts] = useState<Product[] | null>(null);
   const [productId, setProductId] = useState<string>(ALL_PRODUCTS);
-  const [dateFrom, setDateFrom] = useState(today);
-  const [dateTo, setDateTo] = useState(today);
+  const [date, setDate] = useState(today);
   const [isDownloading, setIsDownloading] = useState(false);
 
   // ダイアログを開いた時に品目マスターを遅延取得
@@ -60,19 +59,14 @@ export function ItemSheetDialog() {
   }, [open, products]);
 
   async function handleGenerate() {
-    if (!dateFrom || !dateTo) {
-      toast.error("期間を指定してください");
-      return;
-    }
-    if (dateTo < dateFrom) {
-      toast.error("終了日は開始日以降にしてください");
+    if (!date) {
+      toast.error("日付を指定してください");
       return;
     }
     setIsDownloading(true);
     try {
       const blob = await fetchShippingSheetPdfBlob({
-        dateFrom,
-        dateTo,
+        date,
         productId: productId === ALL_PRODUCTS ? undefined : productId,
       });
       const url = URL.createObjectURL(blob);
@@ -82,15 +76,15 @@ export function ItemSheetDialog() {
         productId === ALL_PRODUCTS
           ? "全品目"
           : products?.find((p) => p.id === productId)?.name ?? "品目";
-      a.download = `出荷票_${productName}_${dateFrom.replace(/-/g, "")}.pdf`;
+      a.download = `出荷表_${productName}_${date.replace(/-/g, "")}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success("出荷票 PDF をダウンロードしました");
       setOpen(false);
     } catch (err) {
       if (err instanceof Error && err.message === "NO_DATA") {
-        toast.info("期間内に該当する注文がありません", {
-          description: "品目・期間を変えて再度お試しください。",
+        toast.info("指定日に該当する注文がありません", {
+          description: "品目・日付を変えて再度お試しください。",
         });
       } else {
         toast.error("出荷票の作成に失敗しました", { description: String(err) });
@@ -137,27 +131,17 @@ export function ItemSheetDialog() {
             </Select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>開始日</Label>
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>終了日</Label>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-              />
-            </div>
+          <div className="space-y-2">
+            <Label>出荷日</Label>
+            <Input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
           </div>
 
           <p className="text-xs text-muted-foreground">
-            期間内の注文を集計し、同じ店舗・品目・規格は合算して出荷一覧表1枚にまとめます（既定は当日）。
+            指定日の注文から、供給先ごとの「出荷表」（品目・量目・数量・出荷日入り）を1枚ずつ作成します。パック作業用です。
           </p>
         </div>
 
