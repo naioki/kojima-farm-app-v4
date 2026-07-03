@@ -129,6 +129,128 @@ async def list_orders(limit: int = 50, offset: int = 0):
 
 # ─── GET /api/orders/{id} ────────────────────────────────────────────────────
 
+# ─── GET /api/orders/shipping-sheet/pdf ─────────────────────────────────────
+# 注意: パスパラメータ /{order_id} より前に定義すること（ルーティング順依存）
+
+@router.get("/shipping-sheet/pdf")
+async def download_shipping_sheet_pdf(
+    date_from: date,
+    date_to: date,
+    product_id: str | None = None,
+    include_labels: bool = False,
+):
+    """
+    期間×品目フィルタ付きの出荷一覧表 PDF（品目別出荷票）。
+    - product_id 省略時は全品目（期間版の汎用出荷票）
+    - 同一 (店舗, 品目, 規格, 入数) は複数注文をまたいで合算
+    - 既定ではラベルページなし（一覧表1ページのみ）
+    """
+    from app.services.shipping_sheet import aggregate_order_data
+
+    if date_to < date_from:
+        raise HTTPException(status_code=400, detail="date_to must be >= date_from")
+
+    sb = get_supabase()
+
+    # 期間内の注文（キャンセル除外）
+    orders_rows = (
+        sb.table("orders")
+        .select("id, order_date")
+        .gte("order_date", date_from.isoformat())
+        .lte("order_date", date_to.isoformat())
+        .neq("status", "cancelled")
+        .execute()
+    )
+    order_ids = [r["id"] for r in (orders_rows.data or [])]
+    if not order_ids:
+        raise HTTPException(status_code=404, detail="期間内に該当する注文がありません")
+
+    lines_rows = (
+        sb.table("order_lines")
+        .select("customer_id, product_standard_id, boxes, remainder")
+        .in_("order_id", order_ids)
+        .execute()
+    )
+
+    customer_ids = list({lr["customer_id"] for lr in (lines_rows.data or []) if lr.get("customer_id")})
+    ps_ids       = list({lr["product_standard_id"] for lr in (lines_rows.data or []) if lr.get("product_standard_id")})
+
+    customers: Dict[str, str] = {}
+    if customer_ids:
+        c = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
+        customers = {r["id"]: r["name"] for r in (c.data or [])}
+
+    ps_map: Dict[str, Dict[str, Any]] = {}
+    if ps_ids:
+        p = (
+            sb.table("product_standards")
+            .select("id, name, unit_size, product_id, products(id, name)")
+            .in_("id", ps_ids)
+            .execute()
+        )
+        for r in (p.data or []):
+            prod = r.get("products")
+            ps_map[r["id"]] = {
+                "spec": r.get("name", ""),
+                "unit_size": int(r.get("unit_size") or 0),
+                "product_id": r.get("product_id", ""),
+                "product_name": prod.get("name", "") if isinstance(prod, dict) else "",
+            }
+
+    # 品目フィルタは必ず products.id（UUID）で行う。名前文字列でのマッチは禁止
+    order_data = []
+    product_name = None
+    for lr in (lines_rows.data or []):
+        ps = ps_map.get(lr.get("product_standard_id", ""), {})
+        if product_id and ps.get("product_id") != product_id:
+            continue
+        if product_id:
+            product_name = ps.get("product_name") or product_name
+        order_data.append({
+            "store": customers.get(lr.get("customer_id", ""), ""),
+            "item": ps.get("product_name", ""),
+            "spec": ps.get("spec", ""),
+            "unit": ps.get("unit_size", 0),
+            "boxes": lr["boxes"],
+            "remainder": lr["remainder"],
+        })
+
+    if not order_data:
+        raise HTTPException(status_code=404, detail="期間内に該当する品目の注文がありません")
+
+    merged = aggregate_order_data(order_data)
+    summary_data = generate_summary_table(merged)
+    labels = generate_labels_from_data(merged, date_from.isoformat()) if include_labels else []
+
+    # タイトル: 【出荷一覧表（トマト）】 7月3日〜7月5日（単日は既存表記と同一見た目）
+    def _jp(d: date) -> str:
+        return f"{d.month}月{d.day}日"
+    period = _jp(date_from) if date_from == date_to else f"{_jp(date_from)}〜{_jp(date_to)}"
+    item_part = f"（{product_name}）" if product_name else ""
+    summary_title = f"【出荷一覧表{item_part}】 {period}"
+
+    from app.services.pdf_generator import LabelPDFGenerator
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        generator = LabelPDFGenerator(font_path=_FONT_PATH)
+        generator.generate_pdf(labels, summary_data, date_from.isoformat(), tmp_path,
+                               summary_title=summary_title)
+        with open(tmp_path, "rb") as f:
+            pdf_bytes = f.read()
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    filename = f"shipping_sheet_{date_from.isoformat()}_{date_to.isoformat()}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{order_id}", response_model=OrderDetail)
 async def get_order(order_id: UUID):
     sb = get_supabase()

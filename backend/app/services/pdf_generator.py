@@ -133,29 +133,37 @@ class LabelPDFGenerator:
         
         return rearranged
     
-    def generate_pdf(self, labels: List[Dict], summary_data: List[Dict], 
-                    shipment_date: str, output_path: str):
+    def generate_pdf(self, labels: List[Dict], summary_data: List[Dict],
+                    shipment_date: str, output_path: str,
+                    summary_title: str = None):
         """
         PDFを生成（複数ページ対応 + 出荷一覧表）
         Cut and Stack形式: 裁断後に重ねるだけで順番が揃う
-        
+
         Args:
-            labels: ラベル情報のリスト（全ラベル）
+            labels: ラベル情報のリスト（全ラベル）。空リストなら一覧表のみ出力
             summary_data: 出荷一覧表用のデータ
             shipment_date: 出荷日（YYYY-MM-DD形式）
             output_path: 出力PDFファイルパス
+            summary_title: 一覧表タイトルの上書き（品目別出荷票等）。None なら既存表記
         """
         c = canvas.Canvas(output_path, pagesize=(self.A4_WIDTH, self.A4_HEIGHT))
         font_name = self._get_font_name()
-        
+
         # 出荷日を表示用に変換（月/日、ゼロ埋めなし 例: 2/7）
         from datetime import datetime
         shipment_date_obj = datetime.strptime(shipment_date, '%Y-%m-%d')
         shipment_date_display = f"{shipment_date_obj.month}月{shipment_date_obj.day}日"  # 口数と区別するため漢字表記
-        
+
         # 1ページ目：出荷一覧表
-        self._draw_summary_page(c, summary_data, shipment_date, font_name)
-        
+        self._draw_summary_page(c, summary_data, shipment_date, font_name,
+                                summary_title=summary_title)
+
+        # ラベルがない場合（一覧表のみのPDF）は空白ページを作らない
+        if not labels:
+            c.save()
+            return
+
         # 出荷一覧表の後に改ページ（ラベルページと分離）
         c.showPage()
         
@@ -221,7 +229,8 @@ class LabelPDFGenerator:
         c.save()
     
     def _draw_summary_page(self, c: canvas.Canvas, summary_data: List[Dict],
-                          raw_shipment_date: str, font_name: str):
+                          raw_shipment_date: str, font_name: str,
+                          summary_title: str = None):
         """出荷一覧表ページを描画（TableオブジェクトとTableStyleを使用）"""
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.platypus import Paragraph
@@ -244,7 +253,8 @@ class LabelPDFGenerator:
 
         # タイトル（上マージン最小限に）
         c.setFont(font_name, title_font_size)
-        c.drawString(10 * mm, self.A4_HEIGHT - 22 * mm, f"【出荷一覧表】 {display_date_str}")
+        title_text = summary_title if summary_title else f"【出荷一覧表】 {display_date_str}"
+        c.drawString(10 * mm, self.A4_HEIGHT - 22 * mm, title_text)
 
         # 店舗別コンテナ合計を事前計算（順序保持）
         store_containers: "OrderedDict[str, int]" = OrderedDict()

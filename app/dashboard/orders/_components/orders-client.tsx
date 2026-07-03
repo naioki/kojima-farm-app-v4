@@ -22,6 +22,7 @@ import {
 import type { Order, OrderDetail } from "@/app/actions/order-actions";
 import { getOrderDetail, deleteOrder } from "@/app/actions/order-actions";
 import { fetchPdfBlob } from "@/lib/api-client";
+import { ItemSheetDialog } from "./item-sheet-dialog";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -186,6 +187,7 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <ItemSheetDialog />
           <button
             type="button"
             onClick={toggleReverseStoreOrder}

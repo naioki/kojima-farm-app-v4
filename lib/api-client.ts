@@ -122,6 +122,27 @@ export async function fetchPdfBlob(orderId: string, reverseStoreOrder = false): 
   return res.blob();
 }
 
+/** 品目別出荷票（期間×品目フィルタ付き出荷一覧）PDF の Blob を取得 */
+export async function fetchShippingSheetPdfBlob(params: {
+  dateFrom: string; // YYYY-MM-DD
+  dateTo: string;   // YYYY-MM-DD
+  productId?: string;
+}): Promise<Blob> {
+  const qs = new URLSearchParams({
+    date_from: params.dateFrom,
+    date_to: params.dateTo,
+  });
+  if (params.productId) qs.set("product_id", params.productId);
+  const res = await fetch(`${BASE_URL}/api/orders/shipping-sheet/pdf?${qs}`);
+  if (res.status === 404) {
+    throw new Error("NO_DATA");
+  }
+  if (!res.ok) {
+    throw new Error(`出荷票PDFの取得に失敗しました (${res.status})`);
+  }
+  return res.blob();
+}
+
 /** IMAP メール取得トリガー */
 export async function fetchEmails(): Promise<{ fetched: number }> {
   return apiFetch<{ fetched: number }>("/api/email/fetch");
