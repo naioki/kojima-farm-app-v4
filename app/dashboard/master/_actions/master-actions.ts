@@ -56,6 +56,14 @@ export type Customer = CustomerRow;
 const CustomerSchema = z.object({
   name: z.string().min(1, "顧客名を入力してください").max(100),
   store_code: z.string().max(20).nullable().optional(),
+  // 中間業者名（系列）。帳票の供給先が「ヨーク 東道野辺」のように表示される。
+  // 店舗指定が不要な業者（例: 寺崎）は顧客名と同じ値にすると系列名のみ表示される。
+  supplier_name: z
+    .string()
+    .max(100)
+    .transform((v) => v.trim() || null)
+    .nullable()
+    .optional(),
   is_active: z.boolean().default(true),
   sort_order: z.number().int().min(1).max(999).default(999).optional(),
 });

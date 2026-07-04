@@ -54,6 +54,9 @@ class VerifyResponse(BaseModel):
 class OrderLineSummary(BaseModel):
     id: UUID
     customer_name: str
+    # 帳票・画面用の供給先表示名（系列＋店舗。例: 「ヨーク 東道野辺」）。
+    # customer_name は名寄せ・Sheets同期の既存キーとして生値のまま維持する。
+    customer_display: str = ""
     product_name: str
     spec: str
     boxes: int

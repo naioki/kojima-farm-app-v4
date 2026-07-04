@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.models import OrderDetail, OrderLineSummary, OrderSummary
+from app.services.destination import format_supply_destination
 from app.services.ocr_parser import generate_labels_from_data, generate_summary_table
 from app.services.supabase_client import get_supabase
 
@@ -28,6 +29,25 @@ _FONT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "assets", "ipae
 
 
 # ─── 共通: 注文明細を一括取得してオブジェクトに整形 ─────────────────────────
+
+def _select_customers(sb, customer_ids: List[str]) -> List[Dict[str, Any]]:
+    """customers を supplier_name 付きで取得。旧スキーマ（列なし）にもフォールバック。"""
+    try:
+        rows = (
+            sb.table("customers")
+            .select("id, name, supplier_name, sort_order")
+            .in_("id", customer_ids)
+            .execute()
+        )
+    except Exception:
+        rows = (
+            sb.table("customers")
+            .select("id, name")
+            .in_("id", customer_ids)
+            .execute()
+        )
+    return rows.data or []
+
 
 def _fetch_order_lines(sb, order_id: str) -> List[OrderLineSummary]:
     """
@@ -49,16 +69,16 @@ def _fetch_order_lines(sb, order_id: str) -> List[OrderLineSummary]:
     customer_ids = list({lr["customer_id"] for lr in lines_rows.data if lr.get("customer_id")})
     ps_ids       = list({lr["product_standard_id"] for lr in lines_rows.data if lr.get("product_standard_id")})
 
-    # 一括フェッチ
+    # 一括フェッチ（supplier_name 未適用の環境でも動くようフォールバックする）
     customers: Dict[str, str] = {}
+    customer_display: Dict[str, str] = {}
     if customer_ids:
-        cust_rows = (
-            sb.table("customers")
-            .select("id, name")
-            .in_("id", customer_ids)
-            .execute()
-        )
-        customers = {r["id"]: r["name"] for r in (cust_rows.data or [])}
+        cust_rows = _select_customers(sb, customer_ids)
+        customers = {r["id"]: r["name"] for r in cust_rows}
+        customer_display = {
+            r["id"]: format_supply_destination(r.get("supplier_name"), r["name"])
+            for r in cust_rows
+        }
 
     ps_map: Dict[str, Dict[str, Any]] = {}
     if ps_ids:
@@ -83,6 +103,7 @@ def _fetch_order_lines(sb, order_id: str) -> List[OrderLineSummary]:
             OrderLineSummary(
                 id=lr["id"],
                 customer_name=customers.get(lr.get("customer_id", ""), ""),
+                customer_display=customer_display.get(lr.get("customer_id", ""), ""),
                 product_name=ps.get("product_name", ""),
                 spec=ps.get("spec", ""),
                 boxes=lr["boxes"],
@@ -169,10 +190,13 @@ async def download_shipping_sheet_pdf(
     customer_ids = list({lr["customer_id"] for lr in (lines_rows.data or []) if lr.get("customer_id")})
     ps_ids       = list({lr["product_standard_id"] for lr in (lines_rows.data or []) if lr.get("product_standard_id")})
 
+    # 供給先は「系列＋店舗」表示（例: ヨーク 東道野辺／寺崎）で仕分けミスを防ぐ
     customers: Dict[str, str] = {}
     if customer_ids:
-        c = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
-        customers = {r["id"]: r["name"] for r in (c.data or [])}
+        customers = {
+            r["id"]: format_supply_destination(r.get("supplier_name"), r["name"])
+            for r in _select_customers(sb, customer_ids)
+        }
 
     ps_map: Dict[str, Dict[str, Any]] = {}
     if ps_ids:
@@ -297,10 +321,13 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
     customer_ids = list({lr["customer_id"] for lr in (lines_rows.data or []) if lr.get("customer_id")})
     ps_ids       = list({lr["product_standard_id"] for lr in (lines_rows.data or []) if lr.get("product_standard_id")})
 
+    # ラベル・出荷一覧表の店舗表示は「系列＋店舗」の供給先表示名を使う
     customers: Dict[str, str] = {}
     if customer_ids:
-        c = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
-        customers = {r["id"]: r["name"] for r in (c.data or [])}
+        customers = {
+            r["id"]: format_supply_destination(r.get("supplier_name"), r["name"])
+            for r in _select_customers(sb, customer_ids)
+        }
 
     ps_map: Dict[str, Dict[str, Any]] = {}
     if ps_ids:
