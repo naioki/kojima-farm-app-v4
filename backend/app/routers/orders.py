@@ -129,6 +129,114 @@ async def list_orders(limit: int = 50, offset: int = 0):
 
 # ─── GET /api/orders/{id} ────────────────────────────────────────────────────
 
+# ─── GET /api/orders/shipping-sheet/pdf ─────────────────────────────────────
+# 注意: パスパラメータ /{order_id} より前に定義すること（ルーティング順依存）
+
+@router.get("/shipping-sheet/pdf")
+async def download_shipping_sheet_pdf(
+    target_date: date,
+    product_id: str | None = None,
+):
+    """
+    品目別出荷票（パック作業用の「出荷表」カード）PDF。
+    - 指定日の注文を対象（単日。パック時に使うため範囲指定は不要）
+    - product_id 省略時は全品目
+    - 同一 (店舗, 品目, 規格, 入数) は複数注文をまたいで合算し、1明細=1ページの出荷表にする
+    """
+    from app.services.shipping_sheet import aggregate_order_data
+
+    sb = get_supabase()
+
+    # 指定日の注文（キャンセル除外）
+    orders_rows = (
+        sb.table("orders")
+        .select("id, order_date")
+        .eq("order_date", target_date.isoformat())
+        .neq("status", "cancelled")
+        .execute()
+    )
+    order_ids = [r["id"] for r in (orders_rows.data or [])]
+    if not order_ids:
+        raise HTTPException(status_code=404, detail="指定日に該当する注文がありません")
+
+    lines_rows = (
+        sb.table("order_lines")
+        .select("customer_id, product_standard_id, boxes, remainder")
+        .in_("order_id", order_ids)
+        .execute()
+    )
+
+    customer_ids = list({lr["customer_id"] for lr in (lines_rows.data or []) if lr.get("customer_id")})
+    ps_ids       = list({lr["product_standard_id"] for lr in (lines_rows.data or []) if lr.get("product_standard_id")})
+
+    customers: Dict[str, str] = {}
+    if customer_ids:
+        c = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
+        customers = {r["id"]: r["name"] for r in (c.data or [])}
+
+    ps_map: Dict[str, Dict[str, Any]] = {}
+    if ps_ids:
+        p = (
+            sb.table("product_standards")
+            .select("id, name, unit_size, product_id, products(id, name)")
+            .in_("id", ps_ids)
+            .execute()
+        )
+        for r in (p.data or []):
+            prod = r.get("products")
+            ps_map[r["id"]] = {
+                "spec": r.get("name", ""),
+                "unit_size": int(r.get("unit_size") or 0),
+                "product_id": r.get("product_id", ""),
+                "product_name": prod.get("name", "") if isinstance(prod, dict) else "",
+            }
+
+    # 品目フィルタは必ず products.id（UUID）で行う。名前文字列でのマッチは禁止
+    order_data = []
+    product_name = None
+    for lr in (lines_rows.data or []):
+        ps = ps_map.get(lr.get("product_standard_id", ""), {})
+        if product_id and ps.get("product_id") != product_id:
+            continue
+        if product_id:
+            product_name = ps.get("product_name") or product_name
+        order_data.append({
+            "store": customers.get(lr.get("customer_id", ""), ""),
+            "item": ps.get("product_name", ""),
+            "spec": ps.get("spec", ""),
+            "unit": ps.get("unit_size", 0),
+            "boxes": lr["boxes"],
+            "remainder": lr["remainder"],
+        })
+
+    if not order_data:
+        raise HTTPException(status_code=404, detail="指定日に該当する品目の注文がありません")
+
+    # 合算 → 出荷一覧表と同じ集計形式（total_quantity / unit_label 付き）に変換
+    merged = aggregate_order_data(order_data)
+    entries = generate_summary_table(merged)
+
+    from app.services.pdf_generator import LabelPDFGenerator
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        generator = LabelPDFGenerator(font_path=_FONT_PATH)
+        generator.generate_shipping_form_pdf(entries, target_date.isoformat(), tmp_path)
+        with open(tmp_path, "rb") as f:
+            pdf_bytes = f.read()
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    filename = f"shipping_form_{target_date.isoformat()}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{order_id}", response_model=OrderDetail)
 async def get_order(order_id: UUID):
     sb = get_supabase()
