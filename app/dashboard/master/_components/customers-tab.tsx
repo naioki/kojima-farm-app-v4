@@ -56,6 +56,7 @@ import {
 
 const schema = z.object({
   name: z.string().min(1, "顧客名を入力してください").max(100),
+  supplier_name: z.string().max(100).optional(),
   store_code: z.string().max(20).optional(),
   is_active: z.boolean().default(true),
 });
@@ -75,7 +76,7 @@ function CustomerForm({
 }) {
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { name: "", store_code: "", is_active: true, ...defaultValues },
+    defaultValues: { name: "", supplier_name: "", store_code: "", is_active: true, ...defaultValues },
   });
 
   return (
@@ -90,6 +91,22 @@ function CustomerForm({
               <FormControl>
                 <Input placeholder="例: 〇〇スーパー" {...field} />
               </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="supplier_name"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>系列（中間業者名）</FormLabel>
+              <FormControl>
+                <Input placeholder="例: ヨーク" {...field} />
+              </FormControl>
+              <p className="text-xs text-muted-foreground">
+                出荷表・ラベルの供給先が「ヨーク 東道野辺」のように表示されます。店舗指定が不要な業者（例: 寺崎）は顧客名と同じ値にすると系列名のみ表示されます。空欄なら顧客名のみ。
+              </p>
               <FormMessage />
             </FormItem>
           )}
@@ -240,6 +257,7 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
             <TableRow>
               <TableHead className="w-28 text-center">配送順</TableHead>
               <TableHead>顧客名</TableHead>
+              <TableHead>系列</TableHead>
               <TableHead>店舗コード</TableHead>
               <TableHead>ステータス</TableHead>
               <TableHead className="text-right">操作</TableHead>
@@ -248,7 +266,7 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
           <TableBody>
             {sorted.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                   顧客データがありません
                 </TableCell>
               </TableRow>
@@ -284,6 +302,9 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
                   </TableCell>
                   <TableCell className="font-medium">{customer.name}</TableCell>
                   <TableCell className="text-muted-foreground">
+                    {customer.supplier_name ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
                     {customer.store_code ?? "—"}
                   </TableCell>
                   <TableCell>
@@ -315,6 +336,7 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
                           <CustomerForm
                             defaultValues={{
                               name: customer.name,
+                              supplier_name: customer.supplier_name ?? "",
                               store_code: customer.store_code ?? "",
                               is_active: customer.is_active,
                             }}

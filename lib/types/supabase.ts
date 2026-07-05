@@ -1553,6 +1553,8 @@ export const Constants = {
 export type CustomerRow = Database['public']['Tables']['customers']['Row'] & {
   store_code?: string | null
   sort_order?: number | null
+  /** 中間業者名（系列）。帳票の供給先表示「ヨーク 東道野辺」に使用 */
+  supplier_name?: string | null
   tenant_id?: string | null
   fax?: string | null
   tel?: string | null
