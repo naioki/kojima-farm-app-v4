@@ -28,14 +28,18 @@ git clone https://github.com/naioki/kojima-farm-app-v4.git
 cd kojima-farm-app-v4
 
 # フロントエンド
-gcloud run deploy kojima-farm-app-v4-frontend --source . --region asia-northeast1
+gcloud run deploy kojima-farm-app-v4-frontend --source . --region asia-northeast1 --clear-base-image
 
 # バックエンド
 cd backend
-gcloud run deploy kojima-farm-app-v4-backend --source . --region asia-northeast1
+gcloud run deploy kojima-farm-app-v4-backend --source . --region asia-northeast1 --clear-base-image
 ```
 
 `npm install` は一切ローカルで実行しないこと（Cloud Run側のDockerビルドが内部で行う）。
+
+`--clear-base-image` が必要な理由: 対象サービスが以前 Buildpacks でデプロイされ「ベースイメージ
+自動更新」が有効になっている状態から、`Dockerfile` を使う明示ビルドへ切り替える際に競合するため。
+一度このフラグ付きで通せば、以降の同サービスへの再デプロイでは不要になる。
 
 ---
 
