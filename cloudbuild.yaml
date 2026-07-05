@@ -1,0 +1,48 @@
+# Cloud Build: フロントエンド（Next.js）を Docker ビルドして Cloud Run へデプロイする。
+# 手順は docs/DEPLOY.md 参照。
+#
+# 設計（Kojima-Farm-Shipping-Management-App の cloudbuild.yaml に倣う）:
+#   - ソースは GitHub トリガー経由（Cloud Build がリポジトリを直接取得）で取得するのが既定運用。
+#     Windows端末からのローカルアップロード（gcloud run/builds --source .）は、
+#     node_modules 内のシンボリックリンクが原因で WinError 1920 を起こすことがあるため
+#     避ける（docs/DEPLOY.md 参照）。
+#   - NEXT_PUBLIC_* は .env.production（リポジトリにコミット済み）から `next build` が
+#     自動で読み込む。RLS前提の非秘匿値のためビルド引数での注入は不要。
+#   - SUPABASE_SERVICE_ROLE_KEY だけ Secret Manager 経由で実行時に渡す（秘匿値）。
+#   - イメージは :latest に加えて :$BUILD_ID でもタグ付けし、ロールバック先を残す。
+
+substitutions:
+  _REGION: asia-northeast1
+  _SERVICE: kojima-farm-app-v4-frontend
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t=gcr.io/$PROJECT_ID/${_SERVICE}:latest
+      - -t=gcr.io/$PROJECT_ID/${_SERVICE}:$BUILD_ID
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, '--all-tags', 'gcr.io/$PROJECT_ID/${_SERVICE}']
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=gcr.io/$PROJECT_ID/${_SERVICE}:$BUILD_ID
+      - --region=${_REGION}
+      - --allow-unauthenticated
+      - --set-secrets=SUPABASE_SERVICE_ROLE_KEY=supabase-service-role-v4:latest
+
+images:
+  - gcr.io/$PROJECT_ID/${_SERVICE}:latest
+  - gcr.io/$PROJECT_ID/${_SERVICE}:$BUILD_ID
+
+options:
+  logging: CLOUD_LOGGING_ONLY
