@@ -119,15 +119,24 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
     customer_ids = list({lr["customer_id"] for lr in lines_rows.data if lr.get("customer_id")})
     ps_ids       = list({lr["product_standard_id"] for lr in lines_rows.data if lr.get("product_standard_id")})
 
+    # ラベル・出荷一覧表の店舗表示は供給先表示名（系列＋店舗）で解決する
+    from app.services.destination import format_supply_destination
+
     customers = {}
     customer_sort = {}
     if customer_ids:
         try:
-            c_rows = sb.table("customers").select("id, name, sort_order").in_("id", customer_ids).execute()
-            customer_sort = {r["id"]: r.get("sort_order") or 999 for r in (c_rows.data or [])}
+            c_rows = sb.table("customers").select("id, name, supplier_name, sort_order").in_("id", customer_ids).execute()
         except Exception:
-            c_rows = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
-        customers = {r["id"]: r["name"] for r in (c_rows.data or [])}
+            try:
+                c_rows = sb.table("customers").select("id, name, sort_order").in_("id", customer_ids).execute()
+            except Exception:
+                c_rows = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
+        customer_sort = {r["id"]: r.get("sort_order") or 999 for r in (c_rows.data or [])}
+        customers = {
+            r["id"]: format_supply_destination(r.get("supplier_name"), r["name"])
+            for r in (c_rows.data or [])
+        }
 
     ps_map = {}
     if ps_ids:
