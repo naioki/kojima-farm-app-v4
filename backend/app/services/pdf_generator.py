@@ -19,6 +19,10 @@ class LabelPDFGenerator:
     # A4サイズ（縦）
     A4_WIDTH = 210 * mm
     A4_HEIGHT = 297 * mm
+
+    # A5サイズ（縦）。出荷表カード（generate_shipping_form_pdf）のみ対応。
+    A5_WIDTH = 148 * mm
+    A5_HEIGHT = 210 * mm
     
     # ラベルサイズ（2列x4段）
     LABEL_WIDTH = 105 * mm  # 210 / 2
@@ -224,10 +228,8 @@ class LabelPDFGenerator:
     # 紙の出荷表と同じ様式: 供給先/品目/量目/数量(ケース・端数・合計)/出荷日/圃場番号/生産者名
     # 1供給先×1明細 = A4 1枚。パック時に離れた場所から読めるよう大きな文字で描画する。
 
-    PRODUCER_NAME = ""  # 手書き記入するため空欄
-
     def generate_shipping_form_pdf(self, entries: List[Dict], shipment_date: str,
-                                   output_path: str):
+                                   output_path: str, paper_size: str = "A4"):
         """
         出荷表カード PDF を生成（1明細 = 1ページ）。
 
@@ -236,35 +238,40 @@ class LabelPDFGenerator:
                        unit_label}] のリスト
             shipment_date: 出荷日（YYYY-MM-DD）
             output_path: 出力先
+            paper_size: "A4"（既定）または "A5"
         """
         from datetime import datetime
         dt = datetime.strptime(shipment_date, "%Y-%m-%d")
 
-        c = canvas.Canvas(output_path, pagesize=(self.A4_WIDTH, self.A4_HEIGHT))
+        page_w, page_h = (self.A5_WIDTH, self.A5_HEIGHT) if paper_size == "A5" else (self.A4_WIDTH, self.A4_HEIGHT)
+        c = canvas.Canvas(output_path, pagesize=(page_w, page_h))
         font_name = self._get_font_name()
 
         for i, e in enumerate(entries):
             if i > 0:
                 c.showPage()
-            self._draw_shipping_form(c, e, dt.month, dt.day, font_name)
+            self._draw_shipping_form(c, e, dt.month, dt.day, font_name, page_w, page_h)
 
         c.save()
 
     def _draw_shipping_form(self, c: canvas.Canvas, e: Dict, month: int, day: int,
-                            font_name: str):
-        """紙の出荷表と同じレイアウトで1ページ描画"""
+                            font_name: str, page_w: float, page_h: float):
+        """紙の出荷表と同じレイアウトで1ページ描画（A4/A5 とも同じ比率で縮尺）"""
         c.setFillColor(black)
         c.setStrokeColor(black)
         c.setLineWidth(1.2)
 
+        # A4基準の座標・フォントサイズを、実際の用紙幅に合わせて一律スケールする。
+        scale = page_w / self.A4_WIDTH
+
         # タイトル
-        c.setFont(font_name, 30)
-        c.drawCentredString(self.A4_WIDTH / 2, self.A4_HEIGHT - 28 * mm, "出　荷　表")
+        c.setFont(font_name, 30 * scale)
+        c.drawCentredString(page_w / 2, page_h - 28 * mm * scale, "出　荷　表")
 
         # 表の枠
-        x0, x1 = 22 * mm, 188 * mm
-        label_x = 62 * mm  # ラベル列の右端
-        top_y = self.A4_HEIGHT - 40 * mm
+        x0, x1 = 22 * mm * scale, 188 * mm * scale
+        label_x = 62 * mm * scale  # ラベル列の右端
+        top_y = page_h - 40 * mm * scale
 
         unit = int(e.get("unit", 0) or 0)
         boxes = int(e.get("boxes", 0) or 0)
@@ -288,13 +295,13 @@ class LabelPDFGenerator:
             # 数量は2行構成のため特別扱い（値は None）
             ("数量", None, 40, 0),
             ("出荷日", f"{month} 月　{day} 日", 24, 26),
-            ("生産者名", self.PRODUCER_NAME, 26, 26),
         ]
 
         y = top_y
-        label_font_size = 18
+        label_font_size = 18 * scale
         for label, value, height_mm, max_font in rows:
-            h = height_mm * mm
+            h = height_mm * mm * scale
+            max_font = max_font * scale
             cell_y = y - h
 
             # 行の枠線
@@ -304,7 +311,7 @@ class LabelPDFGenerator:
 
             # ラベル
             c.setFont(font_name, label_font_size)
-            c.drawString(x0 + 5 * mm, cell_y + h / 2 - label_font_size * 0.35, label)
+            c.drawString(x0 + 5 * mm * scale, cell_y + h / 2 - label_font_size * 0.35, label)
 
             value_w = x1 - label_x
             if label == "数量":
@@ -317,10 +324,10 @@ class LabelPDFGenerator:
                 line1 = f"ケース {boxes}　　端数 {remainder}"
                 total_disp = f"{total}{unit_label}" if unit_label else str(total)
                 line2 = f"合計 {total_disp}"
-                fs, tw, th = self._draw_text_in_quadrant(c, line1, font_name, 26, value_w * 0.95, h / 2)
+                fs, tw, th = self._draw_text_in_quadrant(c, line1, font_name, 26 * scale, value_w * 0.95, h / 2)
                 c.setFont(font_name, fs)
                 c.drawCentredString(label_x + value_w / 2, mid + (h / 2 - th) / 2, line1)
-                fs, tw, th = self._draw_text_in_quadrant(c, line2, font_name, 30, value_w * 0.95, h / 2)
+                fs, tw, th = self._draw_text_in_quadrant(c, line2, font_name, 30 * scale, value_w * 0.95, h / 2)
                 c.setFont(font_name, fs)
                 c.drawCentredString(label_x + value_w / 2, cell_y + (h / 2 - th) / 2, line2)
             else:

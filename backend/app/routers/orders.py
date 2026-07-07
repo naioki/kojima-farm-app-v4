@@ -136,13 +136,18 @@ async def list_orders(limit: int = 50, offset: int = 0):
 async def download_shipping_sheet_pdf(
     target_date: date,
     product_id: str | None = None,
+    paper_size: str = "A4",
 ):
     """
     品目別出荷票（パック作業用の「出荷表」カード）PDF。
     - 指定日の注文を対象（単日。パック時に使うため範囲指定は不要）
     - product_id 省略時は全品目
     - 同一 (店舗, 品目, 規格, 入数) は複数注文をまたいで合算し、1明細=1ページの出荷表にする
+    - paper_size は "A4" または "A5"（既定 A4）
     """
+    paper_size = paper_size.upper()
+    if paper_size not in ("A4", "A5"):
+        raise HTTPException(status_code=400, detail="paper_size は A4 または A5 を指定してください")
     from app.services.shipping_sheet import aggregate_order_data
 
     sb = get_supabase()
@@ -212,6 +217,10 @@ async def download_shipping_sheet_pdf(
     if not order_data:
         raise HTTPException(status_code=404, detail="指定日に該当する品目の注文がありません")
 
+    # Supabase の返却順は ORDER BY 無しでは不定（呼ぶたびにページ順が変わる）ため、
+    # 店舗名→品目名→規格で明示的に並べ替えて出力順を固定する。
+    order_data.sort(key=lambda e: (e["store"], e["item"], e["spec"]))
+
     # 合算 → 出荷一覧表と同じ集計形式（total_quantity / unit_label 付き）に変換
     merged = aggregate_order_data(order_data)
     entries = generate_summary_table(merged)
@@ -222,7 +231,7 @@ async def download_shipping_sheet_pdf(
         tmp_path = tmp.name
     try:
         generator = LabelPDFGenerator(font_path=_FONT_PATH)
-        generator.generate_shipping_form_pdf(entries, target_date.isoformat(), tmp_path)
+        generator.generate_shipping_form_pdf(entries, target_date.isoformat(), tmp_path, paper_size=paper_size)
         with open(tmp_path, "rb") as f:
             pdf_bytes = f.read()
     finally:

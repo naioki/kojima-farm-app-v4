@@ -42,6 +42,7 @@ export function ItemSheetDialog() {
   const [products, setProducts] = useState<Product[] | null>(null);
   const [productId, setProductId] = useState<string>(ALL_PRODUCTS);
   const [date, setDate] = useState(today);
+  const [paperSize, setPaperSize] = useState<"A4" | "A5">("A4");
   const [isDownloading, setIsDownloading] = useState(false);
 
   // ダイアログを開いた時に品目マスターを遅延取得
@@ -68,6 +69,7 @@ export function ItemSheetDialog() {
       const blob = await fetchShippingSheetPdfBlob({
         date,
         productId: productId === ALL_PRODUCTS ? undefined : productId,
+        paperSize,
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -138,6 +140,19 @@ export function ItemSheetDialog() {
               value={date}
               onChange={(e) => setDate(e.target.value)}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label>用紙サイズ</Label>
+            <Select value={paperSize} onValueChange={(v) => setPaperSize(v as "A4" | "A5")}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="A4">A4</SelectItem>
+                <SelectItem value="A5">A5</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <p className="text-xs text-muted-foreground">

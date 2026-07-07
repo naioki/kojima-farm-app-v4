@@ -126,8 +126,9 @@ export async function fetchPdfBlob(orderId: string, reverseStoreOrder = false): 
 export async function fetchShippingSheetPdfBlob(params: {
   date: string; // YYYY-MM-DD（単日）
   productId?: string;
+  paperSize?: "A4" | "A5";
 }): Promise<Blob> {
-  const qs = new URLSearchParams({ target_date: params.date });
+  const qs = new URLSearchParams({ target_date: params.date, paper_size: params.paperSize ?? "A4" });
   if (params.productId) qs.set("product_id", params.productId);
   const res = await fetch(`${BASE_URL}/api/orders/shipping-sheet/pdf?${qs}`);
   if (res.status === 404) {
