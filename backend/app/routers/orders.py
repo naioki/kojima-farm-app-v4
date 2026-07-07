@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.models import OrderDetail, OrderLineSummary, OrderSummary
-from app.services.destination import format_supply_destination
+from app.services.destination import format_supply_destination, split_supply_destination
 from app.services.ocr_parser import generate_labels_from_data, generate_summary_table
 from app.services.supabase_client import get_supabase
 
@@ -195,13 +195,15 @@ async def download_shipping_sheet_pdf(
     customer_ids = list({lr["customer_id"] for lr in (lines_rows.data or []) if lr.get("customer_id")})
     ps_ids       = list({lr["product_standard_id"] for lr in (lines_rows.data or []) if lr.get("product_standard_id")})
 
-    # 供給先は「系列＋店舗」表示（例: ヨーク 東道野辺／寺崎）で仕分けミスを防ぐ
-    customers: Dict[str, str] = {}
+    # 供給先は系列（例: ヨーク）と店舗名（東道野辺／寺崎）を分けて持つ。
+    # 系列は出荷票タイトル・出荷一覧表の見出しに1回だけ出し、行の店舗名は短く保つ。
+    customer_supplier: Dict[str, str] = {}
+    customer_store: Dict[str, str] = {}
     if customer_ids:
-        customers = {
-            r["id"]: format_supply_destination(r.get("supplier_name"), r["name"])
-            for r in _select_customers(sb, customer_ids)
-        }
+        for r in _select_customers(sb, customer_ids):
+            supplier, store = split_supply_destination(r.get("supplier_name"), r["name"])
+            customer_supplier[r["id"]] = supplier
+            customer_store[r["id"]] = store
 
     ps_map: Dict[str, Dict[str, Any]] = {}
     if ps_ids:
@@ -229,8 +231,10 @@ async def download_shipping_sheet_pdf(
             continue
         if product_id:
             product_name = ps.get("product_name") or product_name
+        cid = lr.get("customer_id", "")
         order_data.append({
-            "store": customers.get(lr.get("customer_id", ""), ""),
+            "supplier": customer_supplier.get(cid, ""),
+            "store": customer_store.get(cid, ""),
             "item": ps.get("product_name", ""),
             "spec": ps.get("spec", ""),
             "unit": ps.get("unit_size", 0),
@@ -242,8 +246,8 @@ async def download_shipping_sheet_pdf(
         raise HTTPException(status_code=404, detail="指定日に該当する品目の注文がありません")
 
     # Supabase の返却順は ORDER BY 無しでは不定（呼ぶたびにページ順が変わる）ため、
-    # 店舗名→品目名→規格で明示的に並べ替えて出力順を固定する。
-    order_data.sort(key=lambda e: (e["store"], e["item"], e["spec"]))
+    # 系列→店舗名→品目名→規格で明示的に並べ替えて出力順を固定する。
+    order_data.sort(key=lambda e: (e["supplier"], e["store"], e["item"], e["spec"]))
 
     # 合算 → 出荷一覧表と同じ集計形式（total_quantity / unit_label 付き）に変換
     merged = aggregate_order_data(order_data)
@@ -330,13 +334,17 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
     customer_ids = list({lr["customer_id"] for lr in (lines_rows.data or []) if lr.get("customer_id")})
     ps_ids       = list({lr["product_standard_id"] for lr in (lines_rows.data or []) if lr.get("product_standard_id")})
 
-    # ラベル・出荷一覧表の店舗表示は「系列＋店舗」の供給先表示名を使う
+    # 個装ラベル（現場が仕分けに使う付箋）は誤配防止のため「系列＋店舗」のフル表示を維持。
+    # 出荷一覧表は系列を見出しに1回だけ出したいので、店舗名のみの表示も別途用意する。
     customers: Dict[str, str] = {}
+    customer_supplier: Dict[str, str] = {}
+    customer_store_only: Dict[str, str] = {}
     if customer_ids:
-        customers = {
-            r["id"]: format_supply_destination(r.get("supplier_name"), r["name"])
-            for r in _select_customers(sb, customer_ids)
-        }
+        for r in _select_customers(sb, customer_ids):
+            customers[r["id"]] = format_supply_destination(r.get("supplier_name"), r["name"])
+            supplier, store_only = split_supply_destination(r.get("supplier_name"), r["name"])
+            customer_supplier[r["id"]] = supplier
+            customer_store_only[r["id"]] = store_only
 
     ps_map: Dict[str, Dict[str, Any]] = {}
     if ps_ids:
@@ -353,8 +361,11 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
     order_data = []
     for lr in (lines_rows.data or []):
         ps = ps_map.get(lr.get("product_standard_id", ""), {})
+        cid = lr.get("customer_id", "")
         order_data.append({
-            "store": customers.get(lr.get("customer_id", ""), ""),
+            "store": customers.get(cid, ""),
+            "store_only": customer_store_only.get(cid, ""),
+            "supplier": customer_supplier.get(cid, ""),
             "item": ps.get("product_name", ""),
             "spec": ps.get("spec", ""),
             "unit": ps.get("unit_size", 0),

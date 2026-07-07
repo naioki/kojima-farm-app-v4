@@ -1,7 +1,7 @@
 """
 品目別出荷票（期間×品目フィルタ付き出荷一覧）用の集計サービス。
 
-複数注文にまたがる同一 (store, item, spec, unit) の行を合算し、
+複数注文にまたがる同一 (supplier, store, item, spec, unit) の行を合算し、
 remainder が unit 以上になった場合は箱に繰り上げて正規化する。
 既存の generate_summary_table / LabelPDFGenerator には手を入れない。
 """
@@ -12,17 +12,19 @@ from typing import Dict, List, Tuple
 
 def aggregate_order_data(order_data: List[Dict]) -> List[Dict]:
     """
-    (store, item, spec, unit) をキーに boxes / remainder を合算する。
+    (supplier, store, item, spec, unit) をキーに boxes / remainder を合算する。
+    supplier は省略可（キーに含めるのは、別系列で同名店舗が存在する場合の誤合算を防ぐため）。
 
     正規化: remainder >= unit のとき boxes += remainder // unit,
     remainder %= unit（system_design_v4.md の「×数字」ルールと整合）。
     unit == 0 の行はラベル生成対象外だが、一覧表には出すためそのまま合算する。
     """
-    merged: Dict[Tuple[str, str, str, int], Dict] = {}
+    merged: Dict[Tuple[str, str, str, str, int], Dict] = {}
     order = []  # 出現順を保持
 
     for entry in order_data:
         key = (
+            entry.get("supplier", ""),
             entry.get("store", ""),
             entry.get("item", ""),
             entry.get("spec", ""),
@@ -30,10 +32,11 @@ def aggregate_order_data(order_data: List[Dict]) -> List[Dict]:
         )
         if key not in merged:
             merged[key] = {
-                "store": key[0],
-                "item": key[1],
-                "spec": key[2],
-                "unit": key[3],
+                "supplier": key[0],
+                "store": key[1],
+                "item": key[2],
+                "spec": key[3],
+                "unit": key[4],
                 "boxes": 0,
                 "remainder": 0,
             }

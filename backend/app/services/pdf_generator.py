@@ -264,9 +264,12 @@ class LabelPDFGenerator:
         # A4基準の座標・フォントサイズを、実際の用紙幅に合わせて一律スケールする。
         scale = page_w / self.A4_WIDTH
 
-        # タイトル
-        c.setFont(font_name, 30 * scale)
-        c.drawCentredString(page_w / 2, page_h - 28 * mm * scale, "出　荷　表")
+        # タイトル。系列（例: ヨーク）があれば「ヨーク出荷票」、無ければ従来通り「出荷表」。
+        supplier = str(e.get("supplier", "") or "").strip()
+        title_text = f"{supplier}出荷票" if supplier else "出　荷　表"
+        title_font_size = (24 if supplier else 30) * scale  # 系列名分ここだけ少し縮小
+        c.setFont(font_name, title_font_size)
+        c.drawCentredString(page_w / 2, page_h - 28 * mm * scale, title_text)
 
         # 表の枠
         x0, x1 = 22 * mm * scale, 188 * mm * scale
@@ -359,14 +362,19 @@ class LabelPDFGenerator:
         header_font_size = 16
         data_font_size = 14
 
+        # 全行が同一系列なら見出しに1回だけ出す（系列が混在する場合は省略し行側は無印にしない）
+        suppliers = {str(entry.get('supplier', '')) for entry in summary_data if entry.get('supplier')}
+        supplier_label = suppliers.pop() if len(suppliers) == 1 else ""
+
         # タイトル（上マージン最小限に）
         c.setFont(font_name, title_font_size)
-        c.drawString(10 * mm, self.A4_HEIGHT - 22 * mm, f"【出荷一覧表】 {display_date_str}")
+        title_text = f"【出荷一覧表】{('　' + supplier_label) if supplier_label else ''} {display_date_str}"
+        c.drawString(10 * mm, self.A4_HEIGHT - 22 * mm, title_text)
 
-        # 店舗別コンテナ合計を事前計算（順序保持）
+        # 店舗別コンテナ合計を事前計算（順序保持）。表示は系列を省いた店舗名のみ。
         store_containers: "OrderedDict[str, int]" = OrderedDict()
         for entry in summary_data:
-            s = str(entry.get('store', ''))
+            s = str(entry.get('store_only', entry.get('store', '')))
             boxes = int(entry.get('boxes', 0))
             rem_box = 1 if int(entry.get('remainder', 0)) > 0 else 0
             store_containers[s] = store_containers.get(s, 0) + boxes + rem_box
@@ -397,7 +405,7 @@ class LabelPDFGenerator:
 
         prev_store: str | None = None
         for entry in summary_data:
-            store = str(entry.get('store', ''))
+            store = str(entry.get('store_only', entry.get('store', '')))
             item_display = str(entry.get('item_display', entry.get('item', '')))
             boxes = int(entry.get('boxes', 0))
             unit_label = entry.get('unit_label', '')

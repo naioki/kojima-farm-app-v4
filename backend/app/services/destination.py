@@ -32,3 +32,25 @@ def format_supply_destination(supplier_name: Optional[str], store_name: Optional
 def customer_display_name(customer: Dict[str, Any]) -> str:
     """customers テーブルの行（dict）から供給先表示名を返す。"""
     return format_supply_destination(customer.get("supplier_name"), customer.get("name"))
+
+
+def split_supply_destination(supplier_name: Optional[str], store_name: Optional[str]) -> tuple[str, str]:
+    """系列（chain）と店舗名を分けて返す。
+
+    出荷一覧表の見出しや出荷票のタイトルに系列を1回だけ出し、店舗名の並びからは
+    系列を省いて短くするために使う（format_supply_destination と同じ既定ルール）。
+
+    Returns:
+        (supplier, store) のタプル。例:
+          ("ヨーク", "東道野辺")  ← 系列あり + 店舗あり
+          ("", "寺崎")            ← 系列のみ（store == supplier）
+          ("", "東道野辺")        ← 系列なし（旧データ互換）
+    """
+    supplier = (supplier_name or "").strip()
+    store = (store_name or "").strip()
+
+    if not supplier or store == supplier:
+        return "", (store or supplier)
+    if not store:
+        return "", supplier
+    return supplier, store

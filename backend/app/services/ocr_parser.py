@@ -447,6 +447,8 @@ def generate_summary_table(order_data: List[Dict]) -> List[Dict]:
         summary.append(
             {
                 "store": store,
+                "store_only": entry.get("store_only", store),
+                "supplier": entry.get("supplier", ""),
                 "item": item,
                 "spec": spec,
                 "item_display": item_display,
