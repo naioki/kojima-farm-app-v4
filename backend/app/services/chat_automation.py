@@ -119,10 +119,11 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
     customer_ids = list({lr["customer_id"] for lr in lines_rows.data if lr.get("customer_id")})
     ps_ids       = list({lr["product_standard_id"] for lr in lines_rows.data if lr.get("product_standard_id")})
 
-    # ラベル・出荷一覧表の店舗表示は供給先表示名（系列＋店舗）で解決する
-    from app.services.destination import format_supply_destination
+    # ラベル・出荷一覧表の店舗表示は系列を省いた店舗名のみ（系列は一覧表の見出しに1回だけ添える）
+    from app.services.destination import split_supply_destination
 
     customers = {}
+    customer_supplier = {}
     customer_sort = {}
     if customer_ids:
         try:
@@ -133,10 +134,10 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
             except Exception:
                 c_rows = sb.table("customers").select("id, name").in_("id", customer_ids).execute()
         customer_sort = {r["id"]: r.get("sort_order") or 999 for r in (c_rows.data or [])}
-        customers = {
-            r["id"]: format_supply_destination(r.get("supplier_name"), r["name"])
-            for r in (c_rows.data or [])
-        }
+        for r in (c_rows.data or []):
+            supplier, store_only = split_supply_destination(r.get("supplier_name"), r["name"])
+            customers[r["id"]] = store_only
+            customer_supplier[r["id"]] = supplier
 
     ps_map = {}
     if ps_ids:
@@ -156,6 +157,7 @@ def _fetch_order_lines(sb, order_id: str) -> List[Dict]:
         cid = lr.get("customer_id", "")
         order_data.append({
             "store": customers.get(cid, ""),
+            "supplier": customer_supplier.get(cid, ""),
             "_sort": customer_sort.get(cid, 999),
             "item": ps.get("product_name", ""),
             "spec": ps.get("spec", ""),

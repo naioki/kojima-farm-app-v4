@@ -334,14 +334,11 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
     customer_ids = list({lr["customer_id"] for lr in (lines_rows.data or []) if lr.get("customer_id")})
     ps_ids       = list({lr["product_standard_id"] for lr in (lines_rows.data or []) if lr.get("product_standard_id")})
 
-    # 個装ラベル（現場が仕分けに使う付箋）は誤配防止のため「系列＋店舗」のフル表示を維持。
-    # 出荷一覧表は系列を見出しに1回だけ出したいので、店舗名のみの表示も別途用意する。
-    customers: Dict[str, str] = {}
+    # 個装ラベル・出荷一覧表とも店舗名は系列を省いた短い表示にする（系列は一覧表の見出しに1回だけ）。
     customer_supplier: Dict[str, str] = {}
     customer_store_only: Dict[str, str] = {}
     if customer_ids:
         for r in _select_customers(sb, customer_ids):
-            customers[r["id"]] = format_supply_destination(r.get("supplier_name"), r["name"])
             supplier, store_only = split_supply_destination(r.get("supplier_name"), r["name"])
             customer_supplier[r["id"]] = supplier
             customer_store_only[r["id"]] = store_only
@@ -363,8 +360,7 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
         ps = ps_map.get(lr.get("product_standard_id", ""), {})
         cid = lr.get("customer_id", "")
         order_data.append({
-            "store": customers.get(cid, ""),
-            "store_only": customer_store_only.get(cid, ""),
+            "store": customer_store_only.get(cid, ""),
             "supplier": customer_supplier.get(cid, ""),
             "item": ps.get("product_name", ""),
             "spec": ps.get("spec", ""),
