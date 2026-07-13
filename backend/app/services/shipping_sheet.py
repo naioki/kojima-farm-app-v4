@@ -53,3 +53,34 @@ def aggregate_order_data(order_data: List[Dict]) -> List[Dict]:
             row["remainder"] %= unit
         result.append(row)
     return result
+
+
+def sort_by_customer_order(order_data: List[Dict], supplier_first: bool = False) -> List[Dict]:
+    """
+    店舗マスタの並び順（customers.sort_order）→ 品目名 → 規格 の順で並べ替える。
+
+    各要素は内部キー "_sort_order"（未設定時は末尾扱いの 999）を持つ想定。
+    Supabase の返却順は ORDER BY 無しでは不定なため、一覧表・ラベルの出力順を
+    店舗一覧の規則（マスタ画面で設定した並び順）に固定するために使う。
+    ソート後、内部キー "_sort_order" は取り除かれる。
+
+    supplier_first=True の場合、系列（supplier）を最優先キーにする
+    （同名店舗が別系列に存在する場合の並び崩れを防ぐ）。
+    """
+    if supplier_first:
+        key_fn = lambda e: (
+            e.get("supplier", ""),
+            e.get("_sort_order", 999),
+            e.get("item", ""),
+            e.get("spec", ""),
+        )
+    else:
+        key_fn = lambda e: (
+            e.get("_sort_order", 999),
+            e.get("item", ""),
+            e.get("spec", ""),
+        )
+    result = sorted(order_data, key=key_fn)
+    for e in result:
+        e.pop("_sort_order", None)
+    return result
