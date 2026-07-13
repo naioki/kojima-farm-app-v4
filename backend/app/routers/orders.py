@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 from app.models import OrderDetail, OrderLineSummary, OrderSummary
 from app.services.destination import format_supply_destination, split_supply_destination
 from app.services.ocr_parser import generate_labels_from_data, generate_summary_table
+from app.services.shipping_sheet import sort_by_customer_order
 from app.services.supabase_client import get_supabase
 
 router = APIRouter()
@@ -199,11 +200,13 @@ async def download_shipping_sheet_pdf(
     # 系列は出荷票タイトル・出荷一覧表の見出しに1回だけ出し、行の店舗名は短く保つ。
     customer_supplier: Dict[str, str] = {}
     customer_store: Dict[str, str] = {}
+    customer_sort: Dict[str, int] = {}
     if customer_ids:
         for r in _select_customers(sb, customer_ids):
             supplier, store = split_supply_destination(r.get("supplier_name"), r["name"])
             customer_supplier[r["id"]] = supplier
             customer_store[r["id"]] = store
+            customer_sort[r["id"]] = r.get("sort_order") or 999
 
     ps_map: Dict[str, Dict[str, Any]] = {}
     if ps_ids:
@@ -240,14 +243,15 @@ async def download_shipping_sheet_pdf(
             "unit": ps.get("unit_size", 0),
             "boxes": lr["boxes"],
             "remainder": lr["remainder"],
+            "_sort_order": customer_sort.get(cid, 999),
         })
 
     if not order_data:
         raise HTTPException(status_code=404, detail="指定日に該当する品目の注文がありません")
 
     # Supabase の返却順は ORDER BY 無しでは不定（呼ぶたびにページ順が変わる）ため、
-    # 系列→店舗名→品目名→規格で明示的に並べ替えて出力順を固定する。
-    order_data.sort(key=lambda e: (e["supplier"], e["store"], e["item"], e["spec"]))
+    # 系列→店舗マスタの並び順（customers.sort_order）→品目名→規格で明示的に並べ替えて固定する。
+    order_data = sort_by_customer_order(order_data, supplier_first=True)
 
     # 合算 → 出荷一覧表と同じ集計形式（total_quantity / unit_label 付き）に変換
     merged = aggregate_order_data(order_data)
@@ -337,11 +341,13 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
     # 個装ラベル・出荷一覧表とも店舗名は系列を省いた短い表示にする（系列は一覧表の見出しに1回だけ）。
     customer_supplier: Dict[str, str] = {}
     customer_store_only: Dict[str, str] = {}
+    customer_sort: Dict[str, int] = {}
     if customer_ids:
         for r in _select_customers(sb, customer_ids):
             supplier, store_only = split_supply_destination(r.get("supplier_name"), r["name"])
             customer_supplier[r["id"]] = supplier
             customer_store_only[r["id"]] = store_only
+            customer_sort[r["id"]] = r.get("sort_order") or 999
 
     ps_map: Dict[str, Dict[str, Any]] = {}
     if ps_ids:
@@ -368,7 +374,12 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
             "unit_type": ps.get("unit_type", ""),  # DBの単位をそのまま渡す
             "boxes": lr["boxes"],
             "remainder": lr["remainder"],
+            "_sort_order": customer_sort.get(cid, 999),
         })
+
+    # Supabase の返却順は不定なため、店舗マスタで設定した並び順（customers.sort_order）
+    # →品目名→規格の順で明示的に固定する（一覧表・ラベルとも同じ順になる）。
+    order_data = sort_by_customer_order(order_data)
 
     if reverse:
         order_data = list(reversed(order_data))
