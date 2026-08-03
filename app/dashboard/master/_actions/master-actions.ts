@@ -156,6 +156,106 @@ export async function updateCustomer(
   }
 }
 
+/**
+ * 配送順を並び替える。**表示順の全件**を受け取り sort_order を 1..N で振り直す。
+ *
+ * 以前は入れ替えた2件だけを保存していた。ローカルでは全件を 1..N に正規化して
+ * いたのに永続化がその2件だけだったため、DB 側の値が連番でない場合に順序が壊れた。
+ *
+ * migrations/004_customer_sort_order.sql が `DEFAULT 999` を入れているので、
+ * 明示指定のない顧客は全員 999 で同値になる。この状態で下位の2件を入れ替えると
+ * その2件だけが小さい値（例: 10, 11）になり、残りの 999 組を飛び越えて前に出る。
+ * 出荷ラベル・出荷一覧表の並びはこの sort_order で決まるため、現場の並びが変わる。
+ *
+ * 全件を1回で書き直すことで、DB 側の値が飛んでいても常に連番へ収束させる。
+ */
+export async function reorderCustomers(
+  orderedIds: string[]
+): Promise<ActionResult<Customer[]>> {
+  try {
+    const ctx = await getAdminClient();
+    if ("error" in ctx) return { success: false, error: ctx.error };
+    const { supabase, profile } = ctx;
+
+    if (orderedIds.length === 0) {
+      return { success: false, error: "並び替える対象がありません。" };
+    }
+    if (new Set(orderedIds).size !== orderedIds.length) {
+      return { success: false, error: "並び順の指定に重複があります。" };
+    }
+
+    // 自テナントの顧客であることを確認する。ここを飛ばすと他テナントの
+    // sort_order を書き換えられる余地が残る。
+    // 同時に現在値を取り、実際に変わる行だけを更新対象にする。
+    const { data: owned, error: ownedError } = await supabase
+      .from("customers")
+      .select("id, sort_order")
+      .eq("tenant_id", profile.tenant_id)
+      .in("id", orderedIds);
+
+    if (ownedError) {
+      console.error("[reorderCustomers] 所有確認エラー:", ownedError);
+      return { success: false, error: "並び順の変更に失敗しました。" };
+    }
+    if ((owned?.length ?? 0) !== orderedIds.length) {
+      return {
+        success: false,
+        error: "対象の顧客が見つかりません。画面を再読み込みしてください。",
+      };
+    }
+
+    const currentOrder = new Map<string, number | null>(
+      (owned ?? []).map((row) => [row.id, row.sort_order])
+    );
+
+    // upsert は使えない。PostgREST の upsert は INSERT ... ON CONFLICT DO UPDATE で、
+    // 送っていない NOT NULL 列（name / tenant_id）が not-null 違反になる。
+    // 単一文にするには DB 関数が必要だが、マイグレーション未適用で並び替えが
+    // 完全に壊れるリスクを負うより、変わる行だけを個別に更新する方を選ぶ。
+    //
+    // 差分だけ送るので、DB が 1..N に揃っている通常時は2行で済む。
+    // 999 が並んでいる初期状態では一度だけ多くの行を書き、以降は連番に収束する。
+    const changed = orderedIds
+      .map((id, index) => ({ id, sort_order: index + 1 }))
+      .filter((row) => currentOrder.get(row.id) !== row.sort_order);
+
+    if (changed.length === 0) {
+      revalidatePath("/dashboard/master");
+      return { success: true, data: [] };
+    }
+
+    const results = await Promise.all(
+      changed.map((row) =>
+        supabase
+          .from("customers")
+          .update({ sort_order: row.sort_order })
+          .eq("id", row.id)
+          .eq("tenant_id", profile.tenant_id)
+          .select()
+          .single()
+      )
+    );
+
+    const failed = results.filter((r) => r.error);
+    if (failed.length > 0) {
+      console.error("[reorderCustomers] DBエラー:", failed[0].error);
+      return {
+        success: false,
+        error: `並び順の変更に失敗しました（${failed.length}/${changed.length} 件）。画面を再読み込みして確認してください。`,
+      };
+    }
+
+    revalidatePath("/dashboard/master");
+    return {
+      success: true,
+      data: results.map((r) => r.data).filter(Boolean) as Customer[],
+    };
+  } catch (err) {
+    console.error("[reorderCustomers] 予期しないエラー:", err);
+    return { success: false, error: "予期しないエラーが発生しました。" };
+  }
+}
+
 export async function deleteCustomer(id: string): Promise<ActionResult> {
   try {
     const ctx = await getAdminClient();
