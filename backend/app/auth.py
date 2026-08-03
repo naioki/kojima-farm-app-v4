@@ -91,6 +91,28 @@ def auth_enforced() -> bool:
     )
 
 
+def missing_required_env() -> list[str]:
+    """
+    認証に必要な環境変数のうち、設定されていないものを返す。
+
+    改修前のバックエンドは URL と service-role キーだけで動いていたため、
+    **ANON キーは既存のデプロイに設定されていない**。これを起動時に検出せずに
+    走らせると、全リクエストが 500（サーバー設定エラー）になり、原因が
+    ログを読むまで分からない。
+    """
+    missing: list[str] = []
+    if not (
+        os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    ):
+        missing.append("NEXT_PUBLIC_SUPABASE_URL")
+    if not (
+        os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+        or os.environ.get("SUPABASE_ANON_KEY")
+    ):
+        missing.append("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    return missing
+
+
 def system_context() -> AuthContext:
     """
     外部 Webhook（Discord / LINE Works / Google Chat）など、Supabase ユーザーが

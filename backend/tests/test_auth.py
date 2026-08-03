@@ -446,6 +446,63 @@ def test_auth_enforced_stays_on_for_anything_else(monkeypatch, value):
 
 # ── 9. API ドキュメントの露出 ─────────────────────────────────────────────
 
+# ── 10. 起動時の設定チェック ───────────────────────────────────────────────
+
+def test_missing_env_is_detected(monkeypatch):
+    """
+    ANON キーは改修前のバックエンドでは不要だったため、既存のデプロイには
+    設定されていない。起動時に検出できることを固定する。
+    """
+    monkeypatch.delenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" in auth.missing_required_env()
+
+    monkeypatch.delenv("NEXT_PUBLIC_SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    assert "NEXT_PUBLIC_SUPABASE_URL" in auth.missing_required_env()
+
+
+def test_no_missing_env_when_configured(monkeypatch):
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon")
+    assert auth.missing_required_env() == []
+
+
+def test_alternate_env_names_are_accepted(monkeypatch):
+    """SUPABASE_URL / SUPABASE_ANON_KEY でも通ること。"""
+    monkeypatch.delenv("NEXT_PUBLIC_SUPABASE_URL", raising=False)
+    monkeypatch.delenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon")
+    assert auth.missing_required_env() == []
+
+
+def test_startup_fails_when_env_missing(monkeypatch):
+    """
+    設定不足のまま起動を通すと全リクエストが 500 になり原因が分からない。
+    起動時に落ちれば Cloud Run は新リビジョンを昇格させず、
+    直前のリビジョンが配信を続ける。
+    """
+    monkeypatch.setenv("AUTH_ENFORCED", "true")
+    monkeypatch.delenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+
+    with pytest.raises(RuntimeError) as exc:
+        with TestClient(app):
+            pass
+    assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" in str(exc.value)
+
+
+def test_startup_succeeds_when_auth_disabled_even_without_env(monkeypatch):
+    """AUTH_ENFORCED=false の退避経路は設定不足でも起動できること。"""
+    monkeypatch.setenv("AUTH_ENFORCED", "false")
+    monkeypatch.delenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+
+    with TestClient(app) as c:
+        assert c.get("/api/health").status_code == 200
+
+
 def test_api_docs_are_not_exposed_by_default(client):
     """スキーマは攻撃者への地図になるため既定で非公開。"""
     assert client.get("/api/docs").status_code == 404
