@@ -7,7 +7,8 @@ import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { CorrectedDataSchema, type CorrectedData } from '@/lib/schemas/ocr'
 import { parseVerification as apiParse, verifyOcr, type ParsedLine as ApiParsedLine } from '@/lib/api-client'
 
-type OcrStatus = 'pending' | 'processing' | 'done' | 'error' | 'review_needed' | 'approved'
+import type { OcrStatus } from '@/lib/types/supabase'
+
 type Json = unknown
 
 type ActionResult<T = void> =
@@ -135,6 +136,101 @@ export async function updateRawText(
     if (error) return { success: false, error: 'テキストの更新に失敗しました。' }
     return { success: true, data: undefined }
   } catch {
+    return { success: false, error: '予期しないエラーが発生しました。' }
+  }
+}
+
+// ─── rejectVerification ─────────────────────────────────────────────────────
+/**
+ * 受注票を却下して未処理キューから外す。
+ *
+ * これまで `rejected` は表示だけ実装されていて、却下する手段が UI にも
+ * Server Action にも無かった。そのため OCR が失敗した受注票や、注文ではない
+ * メールを未処理から外せず、「未処理 N」のバッジが永久に減らないゴミが
+ * 溜まり続けていた。
+ *
+ * 一方で受注削除（order-actions.deleteOrder）は検証を needs_review に戻すため、
+ * 未処理を増やす方向の弁しか存在しない状態だった。
+ */
+export async function rejectVerification(
+  verificationId: string,
+  reason?: string,
+): Promise<ActionResult> {
+  try {
+    const auth = await _getAuthProfile()
+    if ('error' in auth) return { success: false, error: auth.error! }
+
+    const { data: row } = await auth.supabase
+      .from('ocr_verifications')
+      .select('id, status, order_id, confidence_flags')
+      .eq('id', verificationId)
+      .eq('tenant_id', auth.tenantId)
+      .single()
+
+    if (!row) {
+      return { success: false, error: '対象の受注票が見つかりません。' }
+    }
+    // 受注が作られているものを却下すると帳票と実績が食い違うため止める。
+    if (row.order_id) {
+      return {
+        success: false,
+        error: 'すでに受注が作成されています。却下する場合は受注一覧から受注を削除してください。',
+      }
+    }
+
+    const flags = (row.confidence_flags as Record<string, unknown>) ?? {}
+    const { error } = await auth.supabase
+      .from('ocr_verifications')
+      .update({
+        status: 'rejected',
+        reviewed_by: auth.profile.id,
+        confidence_flags: {
+          ...flags,
+          rejected_at: new Date().toISOString(),
+          rejected_reason: reason?.trim() || null,
+        },
+      })
+      .eq('id', verificationId)
+      .eq('tenant_id', auth.tenantId)
+
+    if (error) {
+      console.error('[rejectVerification] DBエラー:', error)
+      return { success: false, error: '却下の保存に失敗しました。' }
+    }
+
+    revalidatePath('/dashboard/verifications')
+    return { success: true, data: undefined }
+  } catch (err) {
+    console.error('[rejectVerification] 予期しないエラー:', err)
+    return { success: false, error: '予期しないエラーが発生しました。' }
+  }
+}
+
+// ─── restoreVerification ────────────────────────────────────────────────────
+/** 却下を取り消して未処理に戻す（誤って却下した場合の復帰経路）。 */
+export async function restoreVerification(
+  verificationId: string,
+): Promise<ActionResult> {
+  try {
+    const auth = await _getAuthProfile()
+    if ('error' in auth) return { success: false, error: auth.error! }
+
+    const { error } = await auth.supabase
+      .from('ocr_verifications')
+      .update({ status: 'needs_review' })
+      .eq('id', verificationId)
+      .eq('tenant_id', auth.tenantId)
+      .eq('status', 'rejected')
+
+    if (error) {
+      console.error('[restoreVerification] DBエラー:', error)
+      return { success: false, error: '復帰に失敗しました。' }
+    }
+
+    revalidatePath('/dashboard/verifications')
+    return { success: true, data: undefined }
+  } catch (err) {
+    console.error('[restoreVerification] 予期しないエラー:', err)
     return { success: false, error: '予期しないエラーが発生しました。' }
   }
 }

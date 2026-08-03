@@ -28,6 +28,12 @@ export const HumanLineSchema = z.object({
     .int({ message: 'バラ数は整数で入力してください' })
     .min(0, { message: 'バラ数は0以上を入力してください' })
     .default(0),
+  // OCR の確度。行と一緒に持ち回すための表示専用フィールド。
+  // 以前は confidence を parsed_lines の添字で引いていたため、フォームが
+  // 配送順にソートされたり行の追加・削除が起きるたびに、警告表示が
+  // 別の行に付いてしまっていた。行データに載せることで添字のズレをなくす。
+  // 承認時は明示的にマッピングして送るため、この値はバックエンドへ渡らない。
+  confidence: z.number().optional(),
 })
 
 export const HumanFormSchema = z.object({
