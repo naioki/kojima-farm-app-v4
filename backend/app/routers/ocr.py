@@ -10,9 +10,10 @@ import os
 import uuid
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from PIL import Image
 
+from app.auth import AuthContext, assert_tenant, require_user
 from app.models import ParseRequest, ParseResponse, ParsedLine, VerifyRequest, VerifyResponse
 from app.services.ocr_parser import parse_order_image, parse_order_text, validate_and_fix_order_data, _nk
 from app.services.supabase_client import get_supabase
@@ -104,24 +105,36 @@ async def _resolve_lines(sb, tenant_id: str, lines: list) -> list:
     return resolved
 
 
-def _get_tenant_id_for_verification(verification_id: str) -> str:
+def _load_verification(verification_id: str, ctx: AuthContext, columns: str) -> Dict[str, Any]:
+    """
+    検証レコードを取得し、呼び出し元のテナントに属していることを確認して返す。
+
+    以前は tenant_id を「対象レコード自身」から読んでいたため、テナント境界が
+    まったく検証されていなかった。tenant_id は必ず認証コンテキスト側を使う。
+    """
     sb = get_supabase()
+    select_columns = columns if "tenant_id" in columns else f"{columns}, tenant_id"
     row = (
         sb.table("ocr_verifications")
-        .select("tenant_id")
+        .select(select_columns)
         .eq("id", str(verification_id))
-        .single()
+        .limit(1)
         .execute()
     )
     if not row.data:
-        raise HTTPException(status_code=404, detail="verification not found")
-    return row.data["tenant_id"]
+        raise HTTPException(status_code=404, detail="対象の受注票が見つかりません。")
+    record = row.data[0]
+    assert_tenant(record.get("tenant_id"), ctx, "対象の受注票")
+    return record
 
 
 # ─── POST /api/ocr/parse ─────────────────────────────────────────────────────
 
 @router.post("/parse", response_model=ParseResponse)
-async def parse_verification(req: ParseRequest):
+async def parse_verification(
+    req: ParseRequest,
+    ctx: AuthContext = Depends(require_user),
+):
     """
     1. ocr_verifications から image_url を取得
     2. Supabase Storage から画像をダウンロード
@@ -132,18 +145,8 @@ async def parse_verification(req: ParseRequest):
     sb = get_supabase()
     verification_id = str(req.verification_id)
 
-    # 検証レコード取得
-    row = (
-        sb.table("ocr_verifications")
-        .select("id, tenant_id, image_url, status")
-        .eq("id", verification_id)
-        .single()
-        .execute()
-    )
-    if not row.data:
-        raise HTTPException(status_code=404, detail="verification not found")
-
-    verif = row.data
+    # 検証レコード取得（テナント所有を確認）
+    verif = _load_verification(verification_id, ctx, "id, tenant_id, image_url, status")
     image_url: str = verif["image_url"]
 
     api_key = os.environ.get("GEMINI_API_KEY", "")
@@ -204,7 +207,7 @@ async def parse_verification(req: ParseRequest):
     }
 
     # DB から商品マスターを取得してスペックを自動補完
-    tenant_id_for_parse = verif["tenant_id"]
+    tenant_id_for_parse = ctx.tenant_id
     _prod_rows = sb.table("products").select("id, name, alt_names").eq("tenant_id", tenant_id_for_parse).execute()
     _prod_by_name: Dict[str, str] = {r["name"].strip(): r["id"] for r in (_prod_rows.data or [])}
     _name_by_prod: Dict[str, str] = {r["id"]: r["name"].strip() for r in (_prod_rows.data or [])}
@@ -410,7 +413,10 @@ async def parse_verification(req: ParseRequest):
 # ─── POST /api/ocr/verify ────────────────────────────────────────────────────
 
 @router.post("/verify", response_model=VerifyResponse)
-async def verify_and_approve(req: VerifyRequest):
+async def verify_and_approve(
+    req: VerifyRequest,
+    ctx: AuthContext = Depends(require_user),
+):
     """
     人間が確認・修正した行を受け取り、既存の approve_ocr_verification RPC を呼び出す。
     RPC が order を作成し order_id を返す。
@@ -421,18 +427,12 @@ async def verify_and_approve(req: VerifyRequest):
     # ── プリフライト: status が corrected なら needs_review に戻す ──────────────
     # RPC は corrected 状態のレコードを拒否するため、承認前にリセットする。
     # 受注削除後の再承認や、前回の承認失敗後のリトライを安全に処理できる。
-    status_row = (
-        sb.table("ocr_verifications")
-        .select("id, status, order_id")
-        .eq("id", verification_id)
-        .single()
-        .execute()
+    status_row = _load_verification(
+        verification_id, ctx, "id, tenant_id, status, order_id"
     )
-    if not status_row.data:
-        raise HTTPException(status_code=404, detail="verification not found")
 
-    current_status = status_row.data.get("status", "")
-    current_order_id = status_row.data.get("order_id")
+    current_status = status_row.get("status", "")
+    current_order_id = status_row.get("order_id")
 
     if current_status == "corrected":
         # 既存 order_id が残っている場合はエラー（受注を先に削除してください）
@@ -448,24 +448,12 @@ async def verify_and_approve(req: VerifyRequest):
     # RPC 呼び出し (system_design_v4.md で定義済み)
     # approve_ocr_verification(p_verification_id, p_tenant_id, p_reviewed_by,
     #                           p_order_date, p_correction_notes, p_lines)
-    tenant_id = _get_tenant_id_for_verification(verification_id)
+    tenant_id = ctx.tenant_id
 
-    # reviewed_by: Next.js から渡された user.id を優先、なければ tenant の admin を検索
-    if req.reviewed_by:
-        reviewed_by = str(req.reviewed_by)
-    else:
-        sb2 = get_supabase()
-        admin_row = (
-            sb2.table("profiles")
-            .select("id")
-            .eq("tenant_id", tenant_id)
-            .eq("role", "admin")
-            .limit(1)
-            .execute()
-        )
-        if not admin_row.data:
-            raise HTTPException(status_code=400, detail="tenant に admin ユーザーが存在しません")
-        reviewed_by = admin_row.data[0]["id"]
+    # reviewed_by は認証済みの呼び出し元で確定する。
+    # 以前はリクエストボディの reviewed_by をそのまま信用していたため、
+    # 承認を別のユーザーの名義に付け替えられる状態だった。
+    reviewed_by = ctx.user_id
 
     lines_payload = [
         {

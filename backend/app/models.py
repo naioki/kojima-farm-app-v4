@@ -42,7 +42,12 @@ class VerifyRequest(BaseModel):
     order_date: date
     corrected_lines: List[OrderLineInput]
     correction_notes: Optional[str] = None
-    reviewed_by: Optional[UUID] = None
+    # 後方互換のため受け取るだけで**使わない**。承認者は必ずアクセストークンから
+    # 決定する（routers/ocr.py）。クライアント指定を信用すると承認の名義を
+    # 他人に付け替えられてしまうため。
+    reviewed_by: Optional[UUID] = Field(
+        None, deprecated=True, description="無視される（承認者はトークンから決定）"
+    )
 
 
 class VerifyResponse(BaseModel):

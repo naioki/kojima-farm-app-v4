@@ -11,9 +11,10 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.auth import AuthContext, require_admin
 from app.models import ItemSetting, ItemSettingUpdate
 from app.services.config_manager import (
     DEFAULT_ITEM_SETTINGS,
@@ -27,9 +28,8 @@ from app.services import prompt_manager
 
 router = APIRouter()
 
-_DEFAULT_TENANT_ID = os.environ.get(
-    "DEFAULT_TENANT_ID", "00000000-0000-0000-0000-000000000001"
-)
+# 設定は呼び出し元のテナントに属する。tenant_id は必ず認証コンテキストから取る
+# （main.py で require_admin を掛けているため、ここに来るのは管理者のみ）。
 
 # .env.local のパス（backend/ 直下）
 _ENV_FILE = os.path.join(os.path.dirname(__file__), "..", "..", ".env.local")
@@ -113,7 +113,7 @@ class StoreEntry(BaseModel):
 
 
 @router.get("/stores", response_model=List[StoreEntry])
-async def list_stores():
+async def list_stores(ctx: AuthContext = Depends(require_admin)):
     """
     Supabase customers テーブルから取得（RLS bypass with service role）。
     テーブルが空の場合は config_manager の JSON にフォールバック。
@@ -123,7 +123,7 @@ async def list_stores():
         rows = (
             sb.table("customers")
             .select("id, name, store_code, is_active")
-            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .eq("tenant_id", ctx.tenant_id)
             .eq("is_active", True)
             .order("name")
             .execute()
@@ -161,14 +161,14 @@ class EmailConfigIn(EmailConfigOut):
 
 
 @router.get("/email", response_model=EmailConfigOut)
-async def get_email_config():
+async def get_email_config(ctx: AuthContext = Depends(require_admin)):
     sb = get_supabase()
     try:
         # .single() は行なしで例外を投げるため .limit(1) で安全に取得
         rows = (
             sb.table("email_config")
             .select("imap_server, imap_port, email_address, sender_email, days_back")
-            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .eq("tenant_id", ctx.tenant_id)
             .limit(1)
             .execute()
         )
@@ -186,7 +186,10 @@ async def get_email_config():
 
 
 @router.put("/email", response_model=EmailConfigOut)
-async def update_email_config(body: EmailConfigIn):
+async def update_email_config(
+    body: EmailConfigIn,
+    ctx: AuthContext = Depends(require_admin),
+):
     """
     メール設定を保存。
     Supabase の email_config テーブルへの保存を試み、
@@ -197,7 +200,7 @@ async def update_email_config(body: EmailConfigIn):
     # ── Supabase 保存を試みる ──────────────────────────────────────────
     sb = get_supabase()
     payload: Dict[str, Any] = {
-        "tenant_id": _DEFAULT_TENANT_ID,
+        "tenant_id": ctx.tenant_id,
         "imap_server": body.imap_server,
         "imap_port": body.imap_port,
         "email_address": body.email_address,
@@ -209,9 +212,9 @@ async def update_email_config(body: EmailConfigIn):
 
     try:
         # ON CONFLICT 一意制約がない場合でも動くように select + update / insert 構成にする
-        check_row = sb.table("email_config").select("id").eq("tenant_id", _DEFAULT_TENANT_ID).limit(1).execute()
+        check_row = sb.table("email_config").select("id").eq("tenant_id", ctx.tenant_id).limit(1).execute()
         if check_row.data:
-            sb.table("email_config").update(payload).eq("tenant_id", _DEFAULT_TENANT_ID).execute()
+            sb.table("email_config").update(payload).eq("tenant_id", ctx.tenant_id).execute()
         else:
             sb.table("email_config").insert(payload).execute()
     except Exception as e:
@@ -238,6 +241,72 @@ async def update_email_config(body: EmailConfigIn):
     )
 
 
+class EmailTestOut(BaseModel):
+    ok: bool
+    message: str
+
+
+@router.post("/email/test", response_model=EmailTestOut)
+async def test_email_connection(ctx: AuthContext = Depends(require_admin)):
+    """
+    IMAP の接続と認証だけを確認する。**メールの取り込みは行わない。**
+
+    以前の設定画面の「接続テスト」は `GET /api/email/fetch` を叩いていたため、
+    テストのつもりで押すと本番のメール取り込みが走り、検証レコードが作られていた。
+    取り込みは /api/email/fetch のまま、確認はこちらに分離した。
+    """
+    from app.services.email_reader import friendly_imap_error, test_imap_connection
+
+    sb = get_supabase()
+    config: Dict[str, Any] = {}
+    try:
+        rows = (
+            sb.table("email_config")
+            .select("imap_server, imap_port, email_address, password")
+            .eq("tenant_id", ctx.tenant_id)
+            .limit(1)
+            .execute()
+        )
+        if rows.data:
+            config = rows.data[0]
+    except Exception as e:
+        print(f"[email_config TEST] Supabase error: {e}")
+
+    imap_server = config.get("imap_server") or os.environ.get("EMAIL_IMAP_SERVER", "")
+    imap_port = int(config.get("imap_port") or os.environ.get("EMAIL_IMAP_PORT", "993"))
+    email_address = config.get("email_address") or os.environ.get("EMAIL_ADDRESS", "")
+    password = config.get("password") or os.environ.get("EMAIL_PASSWORD", "")
+
+    missing = [
+        label
+        for label, value in (
+            ("IMAPサーバー", imap_server),
+            ("メールアカウント", email_address),
+            ("パスワード", password),
+        )
+        if not value
+    ]
+    if missing:
+        return EmailTestOut(
+            ok=False,
+            message=f"設定が不足しています: {', '.join(missing)}。入力して保存してから再度お試しください。",
+        )
+
+    try:
+        test_imap_connection(
+            imap_server=imap_server,
+            email_address=email_address,
+            password=password,
+            imap_port=imap_port,
+        )
+    except Exception as e:  # noqa: BLE001 — imaplib/socket/ssl の例外を横断して扱う
+        return EmailTestOut(ok=False, message=friendly_imap_error(e))
+
+    return EmailTestOut(
+        ok=True,
+        message=f"{email_address} に接続できました。",
+    )
+
 
 # ─── Chat Config ──────────────────────────────────────────────────────────────
 
@@ -251,13 +320,13 @@ class ChatConfigOut(BaseModel):
 
 
 @router.get("/chat", response_model=ChatConfigOut)
-async def get_chat_config():
+async def get_chat_config(ctx: AuthContext = Depends(require_admin)):
     sb = get_supabase()
     try:
         rows = (
             sb.table("chat_config")
             .select("discord_webhook_url, line_works_bot_id, line_works_api_token, google_chat_webhook_url, allowed_line_users, allowed_discord_users")
-            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .eq("tenant_id", ctx.tenant_id)
             .limit(1)
             .execute()
         )
@@ -278,10 +347,13 @@ async def get_chat_config():
 
 
 @router.put("/chat", response_model=ChatConfigOut)
-async def update_chat_config(body: ChatConfigOut):
+async def update_chat_config(
+    body: ChatConfigOut,
+    ctx: AuthContext = Depends(require_admin),
+):
     sb = get_supabase()
     payload = {
-        "tenant_id": _DEFAULT_TENANT_ID,
+        "tenant_id": ctx.tenant_id,
         "discord_webhook_url": body.discord_webhook_url or "",
         "line_works_bot_id": body.line_works_bot_id or "",
         "line_works_api_token": body.line_works_api_token or "",
@@ -291,9 +363,9 @@ async def update_chat_config(body: ChatConfigOut):
     }
     
     try:
-        check_row = sb.table("chat_config").select("id").eq("tenant_id", _DEFAULT_TENANT_ID).limit(1).execute()
+        check_row = sb.table("chat_config").select("id").eq("tenant_id", ctx.tenant_id).limit(1).execute()
         if check_row.data:
-            sb.table("chat_config").update(payload).eq("tenant_id", _DEFAULT_TENANT_ID).execute()
+            sb.table("chat_config").update(payload).eq("tenant_id", ctx.tenant_id).execute()
         else:
             sb.table("chat_config").insert(payload).execute()
     except Exception as e:
@@ -355,13 +427,13 @@ class PromptHistoryEntry(BaseModel):
 
 
 @router.get("/prompt", response_model=PromptConfigOut)
-async def get_prompt_config():
+async def get_prompt_config(ctx: AuthContext = Depends(require_admin)):
     sb = get_supabase()
     try:
         rows = (
             sb.table("prompt_config")
             .select("image_prompt, text_prompt, is_custom_enabled, version")
-            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .eq("tenant_id", ctx.tenant_id)
             .limit(1)
             .execute()
         )
@@ -379,7 +451,10 @@ async def get_prompt_config():
 
 
 @router.put("/prompt", response_model=PromptConfigOut)
-async def update_prompt_config(body: PromptConfigIn):
+async def update_prompt_config(
+    body: PromptConfigIn,
+    ctx: AuthContext = Depends(require_admin),
+):
     """
     プロンプト設定を保存。
     フェイルセーフ:
@@ -408,7 +483,7 @@ async def update_prompt_config(body: PromptConfigIn):
         existing = (
             sb.table("prompt_config")
             .select("image_prompt, text_prompt, is_custom_enabled, version")
-            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .eq("tenant_id", ctx.tenant_id)
             .limit(1)
             .execute()
         )
@@ -419,7 +494,7 @@ async def update_prompt_config(body: PromptConfigIn):
         if prev:
             try:
                 sb.table("prompt_config_history").insert({
-                    "tenant_id": _DEFAULT_TENANT_ID,
+                    "tenant_id": ctx.tenant_id,
                     "version": prev_version,
                     "image_prompt": prev.get("image_prompt"),
                     "text_prompt": prev.get("text_prompt"),
@@ -431,14 +506,14 @@ async def update_prompt_config(body: PromptConfigIn):
 
         new_version = prev_version + 1
         payload = {
-            "tenant_id": _DEFAULT_TENANT_ID,
+            "tenant_id": ctx.tenant_id,
             "image_prompt": body.image_prompt,
             "text_prompt": body.text_prompt,
             "is_custom_enabled": body.is_custom_enabled,
             "version": new_version,
         }
         if prev:
-            sb.table("prompt_config").update(payload).eq("tenant_id", _DEFAULT_TENANT_ID).execute()
+            sb.table("prompt_config").update(payload).eq("tenant_id", ctx.tenant_id).execute()
         else:
             sb.table("prompt_config").insert(payload).execute()
 
@@ -496,13 +571,13 @@ async def test_prompt(body: PromptTestIn):
 
 
 @router.get("/prompt/history", response_model=List[PromptHistoryEntry])
-async def get_prompt_history():
+async def get_prompt_history(ctx: AuthContext = Depends(require_admin)):
     sb = get_supabase()
     try:
         rows = (
             sb.table("prompt_config_history")
             .select("version, image_prompt, text_prompt, is_custom_enabled, saved_by, created_at")
-            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .eq("tenant_id", ctx.tenant_id)
             .order("version", desc=True)
             .limit(20)
             .execute()

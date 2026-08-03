@@ -274,3 +274,59 @@ def mark_email_as_read(imap_server: str, email_address: str, password: str, emai
         mail.logout()
     except Exception as e:
         print(f"メール既読マークエラー: {e}")
+
+
+def friendly_imap_error(e: Exception) -> str:
+    """IMAP の例外を、設定のどこを直せばよいか分かる日本語メッセージに変換する。"""
+    import socket
+    import ssl
+
+    err_str = str(e)
+    # ホスト名解決失敗（サーバー名の誤りなど）
+    if isinstance(e, socket.gaierror) or "getaddrinfo" in err_str or "gaierror" in err_str:
+        return "IMAPサーバーへの接続に失敗しました。サーバー名（ホスト名）が正しいかご確認ください。"
+    # 接続タイムアウト
+    if isinstance(e, (socket.timeout, TimeoutError)) or "timed out" in err_str.lower():
+        return "メールサーバーへの接続がタイムアウトしました。サーバー名、ポート番号、またはネットワーク接続状況をご確認ください。"
+    # 接続拒否（ポート番号の誤りなど）
+    if isinstance(e, ConnectionRefusedError) or "connection refused" in err_str.lower():
+        return "メールサーバーへの接続が拒否されました。ポート番号（SSLは通常993）が正しいかご確認ください。"
+    # ログインエラー（メールアドレス/パスワードの間違いなど）
+    if (
+        isinstance(e, imaplib.IMAP4.error)
+        or "login failed" in err_str.lower()
+        or "authenticationfailed" in err_str.lower()
+    ):
+        return "メールボックスのログインに失敗しました。メールアドレスまたはパスワードが正しいかご確認ください。"
+    # SSL/TLS エラー
+    if isinstance(e, ssl.SSLError) or "ssl" in err_str.lower():
+        return "SSL/TLS暗号化接続エラーが発生しました。ポート番号（SSLは通常993）が正しいかご確認ください。"
+
+    return f"メールサーバー接続エラー: {err_str}"
+
+
+def test_imap_connection(
+    imap_server: str,
+    email_address: str,
+    password: str,
+    imap_port: int = 993,
+    timeout: int = 15,
+) -> None:
+    """
+    接続と認証だけを確認する。メールの取得・既読化・取り込みは一切行わない。
+
+    設定画面の「接続テスト」から呼ばれる。以前のテストはメール取り込み
+    エンドポイントを叩いていたため、押すだけで検証レコードが作られていた。
+
+    成功時は None を返し、失敗時は例外をそのまま送出する
+    （呼び出し側で friendly_imap_error に通す）。
+    """
+    mail = imaplib.IMAP4_SSL(imap_server, imap_port, timeout=timeout)
+    try:
+        mail.login(email_address, password)
+        mail.select("inbox", readonly=True)
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
