@@ -1,9 +1,12 @@
 # System Design v4 — 小島農園 管理システム
 
-**Version**: 4.1  
-**Date**: 2026-05-07  
-**Author**: Claude (Senior Full-Stack Engineer)  
+**Version**: 4.2  
+**Date**: 2026-08-03  
 **Status**: In Progress
+
+> **v4.2 の変更**: 実装済みだが本書に載っていなかった3画面（受注一覧・請求書・売上）を
+> 追記し、認証・認可の実装状況を実態に合わせた。§7 の残タスク表は完了分を反映済み。
+> 改修の巻き戻し手順は `docs/ROLLBACK.md`。
 
 ---
 
@@ -36,7 +39,7 @@ v3 は単一ファイルの Streamlit アプリで、メール取得 → AI解�
 |---|---|
 | Frontend | Next.js 16 (App Router, TypeScript, Turbopack) |
 | Backend API | FastAPI (Python 3.14) |
-| Auth | Supabase Auth (JWT, cookie) |
+| Auth | Supabase Auth。フロント: cookie セッション（`proxy.ts`）／バックエンド: `Authorization: Bearer` の JWT 検証（`backend/app/auth.py`） |
 | Database | Supabase Postgres |
 | PDF | ReportLab (v3 から移植) |
 | AI Parsing | Gemini 2.0-flash API |
@@ -48,53 +51,98 @@ v3 は単一ファイルの Streamlit アプリで、メール取得 → AI解�
 ```
 Browser (Next.js :3000)
   /login
-  /dashboard/verifications   ← メイン画面
+  /dashboard/verifications   ← メイン画面（OCR検証・承認）
+  /dashboard/orders          ← 受注一覧・出荷ラベル再発行・品目別出荷票
+  /dashboard/invoices        ← 請求書
+  /dashboard/analytics       ← 売上ダッシュボード
   /dashboard/master          ← マスターデータ管理
-  /dashboard/settings        ← メール・API設定
-        │ HTTP (Supabase JWT cookie)
-FastAPI Backend (:8000)
-  GET  /api/email/fetch         ← IMAP取得 → Storage → ocr_verifications
-  POST /api/ocr/parse           ← verification_id → Gemini → parsed_lines
-  POST /api/ocr/verify          ← corrected_lines → approve RPC → order_id
-  GET  /api/orders/{id}/pdf     ← order_id → ReportLab → PDF stream
-  CRUD /api/config/*            ← stores/items/units/email_config
-        │ SQL (RLS)                      │ Supabase Storage
+  /dashboard/settings        ← メール・チャット連携・AIプロンプト・会社情報
+        │
+        │ ブラウザは FastAPI を直接叩かない。
+        │ Server Action（app/actions/）と Route Handler（app/api/）だけが
+        │ バックエンドと話し、そこでアクセストークンを付与する。
+        │ 理由: トークンは httpOnly cookie にありサーバー側でしか読めず、
+        │       直叩きの経路は Server Action 側の認可を素通りする裏口になる。
+        ▼
+Next.js Server (Server Action / Route Handler)
+        │ HTTP + Authorization: Bearer <Supabase access token>
+        ▼
+FastAPI Backend (:8000)   ※ 全ルーターに認証を掛ける（main.py）
+  require_user:
+    GET  /api/email/fetch         ← IMAP取得 → Storage → ocr_verifications
+    POST /api/ocr/parse           ← verification_id → Gemini → parsed_lines
+    POST /api/ocr/verify          ← corrected_lines → approve RPC → order_id
+    GET  /api/orders              ← 受注一覧（テナントで絞る）
+    GET  /api/orders/{id}/pdf     ← order_id → ReportLab → PDF stream
+    GET  /api/orders/shipping-sheet/pdf
+  require_admin:
+    CRUD /api/config/*            ← stores/items/email/chat/prompt
+    POST /api/config/email/test   ← IMAP接続確認（副作用なし）
+  認証なし（外部Webhook。送信元検証は各Webhookの責務）:
+    POST /api/chat/{discord,lineworks,googlechat}
+  認証なし（ヘルスチェック）:
+    GET  /api/health
+        │ SQL（service-role。tenant_id は必ず JWT 由来の値で絞る）
+        ▼                                  │ Supabase Storage
 Supabase Postgres               Supabase Storage (fax-images/)
 ```
 
+### 認可の原則
+
+1. **tenant_id はリクエストからも対象レコードからも取らない。** 必ずアクセス
+   トークン → `profiles` で解決した値を使う（`backend/app/auth.py`）。
+2. **他テナントのレコードは 404。** 403 は「存在はする」ことを漏らすため。
+3. **承認者はトークンから決める。** クライアントが指定した `reviewed_by` は無視する。
+4. **設定系は管理者のみ。** IMAP パスワードや外部サービスのトークンを扱うため。
+5. 障害時は `AUTH_ENFORCED=false` で認証を一時的に外せる（`docs/ROLLBACK.md`）。
+
 ---
 
-## 3. 実装済み機能（v4.1 時点）
+## 3. 実装済み機能（v4.2 時点）
 
 ### ✅ 完了
 
 | 機能 | 場所 |
 |---|---|
 | Supabase Auth ログイン/リダイレクト | `proxy.ts`, `app/login/page.tsx` |
-| OCR 検証ダッシュボード（2カラム） | `app/dashboard/verifications/` |
-| 未処理/全件フィルタタブ | `verification-dashboard.tsx` |
+| ログアウト・ログイン中ユーザー表示 | `app/dashboard/_components/user-menu.tsx` |
+| バックエンドAPIの JWT 認証・管理者判定 | `backend/app/auth.py`, `backend/app/main.py` |
+| テナント境界の検証（他テナントは404） | `auth.assert_tenant` + 各ルーター |
+| OCR 検証ダッシュボード（3分割 / モバイル縦積み） | `app/dashboard/verifications/` |
+| 未処理/全件フィルタタブ・期間絞り込み（サーバー側） | `verification-dashboard.tsx`, `page.tsx` |
 | 全ステータス表示（承認済・却下含む） | `verification-list.tsx` |
-| 承認済みは読み取り専用表示 | `verification-form.tsx` |
-| Gemini 解析ボタン | `verification-form.tsx` → `POST /api/ocr/parse` |
-| 承認 & PDF 自動ダウンロード | `verification-form.tsx` → `POST /api/ocr/verify` |
-| メール取得ボタン（ヘッダー） | `email-fetch-button.tsx` → `GET /api/email/fetch` |
+| 承認済み・却下済みは読み取り専用表示 | `verification-form.tsx` |
+| Gemini 解析／再解析（左ペインに集約） | `image-viewer.tsx` → `POST /api/ocr/parse` |
+| メール本文の編集 → 再解析 | `image-viewer.tsx` → `updateRawText` + parse |
+| 承認 & 出荷ラベル PDF 発行・完了カード・PDF再取得 | `verification-form.tsx` → `POST /api/ocr/verify` |
+| 却下・却下の取り消し | `ocr-actions.rejectVerification / restoreVerification` |
+| メール取得ボタン（ヘッダー） | `email-fetch-button.tsx` → Server Action |
 | IMAP 取得・Storage アップロード | `backend/app/routers/email_fetch.py` |
+| IMAP 接続テスト（副作用なし） | `POST /api/config/email/test` |
 | HTMLメール本文抽出 | `backend/app/services/email_reader.py` |
 | テキスト/HTMLメール → Gemini 即時解析 | `email_fetch.py` |
 | 重複メール検出（email_id チェック） | `email_fetch.py` |
-| マスターデータ CRUD | `app/dashboard/master/` |
-| 設定画面（メール設定） | `app/dashboard/settings/` |
+| **受注一覧**（期間・ステータス絞り込み、削除、PDF再発行） | `app/dashboard/orders/` |
+| **品目別出荷票 PDF**（パック作業用） | `orders/_components/item-sheet-dialog.tsx` |
+| **請求書**（一覧・作成・PDF・ステータス変更） | `app/dashboard/invoices/` |
+| **売上ダッシュボード**（月別・品目別・納入先別） | `app/dashboard/analytics/` |
+| マスターデータ CRUD（品目・顧客・商品・規格・価格） | `app/dashboard/master/` |
+| 配送順の並び替え（全件を1..Nで保存） | `master-actions.reorderCustomers` |
+| 設定画面（メール・チャット連携・AIプロンプト・会社情報） | `app/dashboard/settings/` |
+| PDF は Route Handler で中継（トークンを露出させない） | `app/api/orders/**` |
+| 日本語フォント（Noto Sans JP） | `app/layout.tsx`, `app/globals.css` |
+| loading / error 境界 | `app/dashboard/{loading,error}.tsx` |
 
-### ⚠️ 未実装・差分（v3 対比）
+### ⚠️ 未実装・残課題
 
-| v3 機能 | v4 状況 | 優先度 |
+| 項目 | 状況 | 優先度 |
 |---|---|---|
-| メール設定をUIから変更・保存 | 設定ページあるが保存API未結合 | **高** |
-| 送信者フィルタ（FROM）をUIから設定 | 環境変数のみ対応 | **高** |
-| メール本文のプレビュー（検証画面で確認） | 画像URLが `text://...` のとき表示なし | **高** |
-| メール一覧に件名・送信者を表示 | ID の先頭8文字のみ | **中** |
-| Gemini API クォータ枯渇時の再解析 | pending のまま放置 | **中** |
-| Google Sheets 連携 | 未実装 | **低** |
+| LINE Works / Google Chat Webhook の送信元検証 | Discord は Ed25519 署名を検証しているが、他2つはユーザーIDの許可リストのみ。許可リストが空だと誰でも承認・印刷を実行できる | **高** |
+| `email_config.password` の暗号化 | 平文カラムに保存。Supabase Vault か暗号化カラムへ移す | **高** |
+| `@ts-nocheck` の解消（3ファイル） | `ocr-actions.ts` / `order-actions.ts` / `master/page.tsx`。受注作成・削除という最重要ロジックを含む | **中** |
+| ダークモード | トークンごと削除済み。実装するならハードコード配色（`bg-green-100` 等）の全画面洗い出しが必要 | **低** |
+| 売上ダッシュボードの月切り替え | 「今月」固定。過去月の品目別・納入先別を見る手段がない | **低** |
+| Google Sheets 連携 | `delivery_sheet_writer.py` はあるが UI 未接続 | **低** |
 
 ---
 
@@ -295,33 +343,45 @@ v4 はデータベース永続化があるため、v3 と完全同一の UI は�
 
 ## 7. 残実装タスク（優先順）
 
-### Phase A：メール関連完成（v3 対応）
+Phase A（v3 対応のメール関連）と Phase B（品質向上）は完了した。内訳:
 
-| # | タスク | ファイル | 概要 |
-|---|---|---|---|
-| A1 | メール設定 保存 API | `backend/app/routers/config.py` | `PATCH /api/config/email` でDBに保存 |
-| A2 | メール設定 UI 保存 | `app/dashboard/settings/page.tsx` | A1を呼び出す保存ボタン |
-| A3 | 送信者フィルタ UI | settings ページ | email_config.sender_email を使用 |
-| A4 | テキストメール本文保存 | `email_fetch.py` | `confidence_flags.raw_text` に保存 |
-| A5 | テキストメールプレビュー | `image-viewer.tsx` | `text://` URL のとき本文カードを表示 |
-| A6 | メール件名・送信者表示 | `verification-list.tsx` | ID の代わりに件名を表示 |
-| A7 | 取得後リスト自動更新 | `email-fetch-button.tsx` | 取得完了後に `router.refresh()` |
+| # | タスク | 状況 |
+|---|---|---|
+| A1 | メール設定 保存 API | ✅ `PUT /api/config/email` |
+| A2 | メール設定 UI 保存 | ✅ Server Action 経由（`config-actions.ts`） |
+| A3 | 送信者フィルタ UI | ✅ settings ページ |
+| A4 | テキストメール本文保存 | ✅ `confidence_flags.raw_text` |
+| A5 | テキストメールプレビュー | ✅ `image-viewer.tsx` |
+| A6 | メール件名・送信者表示 | ✅ `verification-list.tsx` |
+| A7 | 取得後リスト自動更新 | ✅ `router.refresh()` |
+| B1 | pending の再解析 | ✅ 左ペインの「再解析」（画像・テキスト両方） |
+| B2 | 解析進捗インジケータ | ✅ |
+| B3 | エラーハンドリング強化 | ✅ `email_reader.friendly_imap_error` |
 
-### Phase B：品質向上
+### Phase D：セキュリティ（残り）
 
 | # | タスク | 概要 |
 |---|---|---|
-| B1 | pending の再解析ボタン | Gemini クォータ回復後に再試行できる UI |
-| B2 | 解析進捗インジケータ | Gemini 解析中のスピナー表示 |
-| B3 | エラーハンドリング強化 | IMAP 接続失敗時の詳細エラーメッセージ |
+| D1 | LINE Works / Google Chat Webhook の送信元検証 | LINE Works は `X-WORKS-Signature` の HMAC-SHA256、Google Chat は Google 署名付き JWT（`google-auth` は導入済み）。既存連携を壊さないため、シークレット設定時のみ検証する opt-in を推奨 |
+| D2 | `email_config.password` の暗号化 | Supabase Vault または暗号化カラム。現状は平文 |
+| D3 | `NEXT_PUBLIC_API_URL` の廃止 | ブラウザからの直叩きは排除済みなので、サーバー専用の `API_URL` へ寄せてバックエンドの所在を隠せる（`lib/api-client.ts` は既に `API_URL` 優先） |
+
+### Phase E：保守性
+
+| # | タスク | 概要 |
+|---|---|---|
+| E1 | `@ts-nocheck` の解消 | `lib/types/supabase.ts` を再生成し、`ocr-actions.ts` / `order-actions.ts` / `master/page.tsx` から外す。`OcrStatus` の誤りは v4.2 で修正済み |
+| E2 | 「並び順」概念の統合 | マスタの `sort_order`（DB）／検証フォームの昇降（state）／PDFの店舗逆順（localStorage）が3系統に分裂している |
+| E3 | localStorage キーの一元管理 | 現状は各コンポーネントが直接読み書きしている |
 
 ### Phase C：将来実装
 
 | # | タスク | 概要 |
 |---|---|---|
-| C1 | Google Sheets 連携 | v3 の delivery_sheet_writer.py を使用 |
+| C1 | Google Sheets 連携 | v3 の delivery_sheet_writer.py を使用（UI未接続） |
 | C2 | 自動メールポーリング | FastAPI BackgroundTasks で定期取得 |
-| C3 | Vercel + Railway デプロイ | 本番環境構築 |
+| C3 | ダークモード | 実装するならハードコード配色の全画面洗い出しが前提 |
+| C4 | 売上ダッシュボードの月切り替え | 現状「今月」固定 |
 
 ---
 
@@ -378,13 +438,20 @@ total_boxes = boxes + (1 if remainder > 0 else 0)
 
 ## 10. リスク
 
-| リスク | 対策 |
-|---|---|
-| パスワード平文保存 | Supabase Vault または暗号化カラム使用 |
-| Gemini クォータ枯渇 | `status=pending` で保存し再解析ボタンを提供 |
-| IMAP SSL 証明書エラー | imaplib の `ssl_context` でホスト検証 |
-| HTML メール多様性 | html.parser + テキスト前処理でロバスト対応 |
-| 重複取得 | `email_id` を `confidence_flags` に保存して重複排除 |
+| リスク | 対策 | 状況 |
+|---|---|---|
+| バックエンドが無認証で service-role キーを持つ | 全ルーターに Supabase JWT 検証。tenant_id はトークン由来に限定 | ✅ v4.2 |
+| ブラウザからの直叩きで認可を素通り | Server Action / Route Handler 経由に統一し `api-client` を server-only に | ✅ v4.2 |
+| 承認者のなりすまし | `reviewed_by` をトークンから決定（リクエスト値は無視） | ✅ v4.2 |
+| 配送順の破損（帳票の並びが変わる） | 表示順の全件を 1..N で保存 | ✅ v4.2 |
+| 一覧の無制限フェッチ | 期間絞り込みをサーバー側へ、取得上限＋打ち切り表示 | ✅ v4.2 |
+| Gemini クォータ枯渇 | `status=pending` で保存し再解析ボタンを提供。再解析結果がフォームに反映されない不具合（無駄な再実行の原因）を修正 | ✅ v4.2 |
+| 未処理キューが詰まる | 却下と復帰の経路を追加 | ✅ v4.2 |
+| パスワード平文保存 | Supabase Vault または暗号化カラム使用 | ⚠️ 未対応（Phase D2） |
+| LINE Works / Google Chat Webhook が無検証 | 署名・JWT 検証を追加 | ⚠️ 未対応（Phase D1） |
+| IMAP SSL 証明書エラー | imaplib の `ssl_context` でホスト検証 | — |
+| HTML メール多様性 | html.parser + テキスト前処理でロバスト対応 | — |
+| 重複取得 | `email_id` を `confidence_flags` に保存して重複排除 | — |
 
 ---
 
@@ -393,36 +460,64 @@ total_boxes = boxes + (1 if remainder > 0 else 0)
 ```
 kojima-farm-app-v4/
 ├── app/
-│   ├── dashboard/
-│   │   ├── verifications/       ✅ 実装済み
-│   │   │   ├── page.tsx
-│   │   │   └── _components/
-│   │   │       ├── verification-dashboard.tsx
-│   │   │       ├── verification-list.tsx
-│   │   │       ├── verification-form.tsx
-│   │   │       └── image-viewer.tsx
-│   │   ├── master/              ✅ 実装済み
-│   │   ├── settings/            ⚠️ UI あり、保存API未結合
-│   │   └── _components/
-│   │       └── email-fetch-button.tsx  ✅ 実装済み
+│   ├── api/                          Route Handler（PDF中継。トークンを露出させない）
+│   │   └── orders/
+│   │       ├── [orderId]/pdf/
+│   │       └── shipping-sheet/
 │   ├── actions/
-│   │   └── ocr-actions.ts       ✅ 全ステータス対応
-│   └── login/                   ✅ 実装済み
+│   │   ├── ocr-actions.ts            検証の取得・解析・承認・却下
+│   │   ├── order-actions.ts          受注の取得・削除
+│   │   ├── invoice-actions.ts        請求書
+│   │   ├── analytics-actions.ts      売上集計
+│   │   └── config-actions.ts         設定（旧: ブラウザ直叩き）
+│   ├── dashboard/
+│   │   ├── layout.tsx                ヘッダー（ナビ・メール取得・ユーザー/ログアウト）
+│   │   ├── loading.tsx / error.tsx   共通の読み込み・エラー境界
+│   │   ├── verifications/            OCR検証（メイン画面）
+│   │   ├── orders/                   受注一覧・品目別出荷票
+│   │   ├── invoices/                 請求書
+│   │   ├── analytics/                売上ダッシュボード
+│   │   ├── master/                   マスターデータ
+│   │   ├── settings/                 メール・チャット・プロンプト・会社情報
+│   │   └── _components/              main-nav, email-fetch-button, user-menu
+│   ├── login/
+│   ├── layout.tsx                    フォント・Toaster（アプリ全体で1つ）
+│   └── globals.css                   デザイントークン
 ├── lib/
-│   ├── api-client.ts            ✅ fetchEmails, parseVerification, verifyOcr
-│   ├── supabase/server.ts       ✅ createClient, createServiceClient
-│   └── schemas/ocr.ts           ✅ Zod スキーマ
-├── proxy.ts                     ✅ Next.js 16 認証ミドルウェア
+│   ├── api-client.ts                 server-only。アクセストークンを付与
+│   ├── download.ts                   ブラウザ側のダウンロード（1か所に集約）
+│   ├── verification.ts               検証画面の純ロジック
+│   ├── verification.test.ts          その vitest テスト
+│   ├── schemas/ocr.ts                Zod スキーマ
+│   ├── supabase/                     client / server
+│   └── types/supabase.ts
+├── proxy.ts                          Next.js 認証ミドルウェア
+├── vitest.config.mts
+├── docs/ROLLBACK.md                  改修の巻き戻し手順
 └── backend/
     └── app/
-        ├── main.py              ✅
+        ├── main.py                   ルーター単位で認証を掛ける唯一の入口
+        ├── auth.py                   JWT 検証・テナント境界・管理者判定
         ├── routers/
-        │   ├── email_fetch.py   ✅ HTML対応・重複排除
-        │   ├── ocr.py           ✅
-        │   ├── orders.py        ✅
-        │   └── config.py        ⚠️ email 保存エンドポイント未実装
-        └── services/
-            ├── email_reader.py  ✅ HTML → テキスト変換対応
-            ├── ocr_parser.py    ✅
-            └── config_manager.py ✅
+        │   ├── ocr.py / orders.py / email_fetch.py / config.py   要認証
+        │   └── chat.py                                           外部Webhook
+        ├── services/
+        └── tests/                    test_auth.py ほか
 ```
+
+## Appendix: 検証コマンド
+
+```bash
+# フロントエンド
+npx tsc --noEmit      # 型チェック（エラーなしが基準）
+npm run lint
+npm test              # vitest（純ロジック）
+npm run build
+
+# バックエンド
+cd backend && .venv/bin/python -m pytest tests/ -q
+```
+
+> `"use server"` のファイルは async 関数以外をエクスポートできない。これは
+> `tsc` では検出されず `next build` で初めて出るため、Server Action を触ったら
+> ビルドまで通すこと。
