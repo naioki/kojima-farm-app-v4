@@ -186,7 +186,8 @@ export async function approveWithFastApi(
         unit: l.unit, boxes: l.boxes, remainder: l.remainder,
       })),
       correction_notes: correctionNotes,
-      reviewed_by: user.id,
+      // reviewed_by は送らない。承認者はバックエンドがアクセストークンから決める
+      // （クライアント指定を信用すると承認の名義を差し替えられるため）。
     })
     revalidatePath('/dashboard/verifications')
     revalidatePath('/dashboard/orders')

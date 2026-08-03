@@ -27,7 +27,7 @@ import {
   parseOcrVerification, approveWithFastApi,
   type PendingVerification, type MasterData,
 } from "@/app/actions/ocr-actions";
-import { fetchPdfBlob } from "@/lib/api-client";
+import { downloadOrderLabelPdf } from "@/lib/download";
 import { cn } from "@/lib/utils";
 
 interface VerificationFormProps {
@@ -236,16 +236,12 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
     if (!id) return;
     setIsPdfLoading(true);
     try {
-      const blob = await fetchPdfBlob(id);
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      const dateStr = (orderDate ?? "").replace(/-/g, "");
-      a.download = dateStr ? `出荷ラベル_${dateStr}.pdf` : `出荷ラベル_${id.slice(0, 8)}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await downloadOrderLabelPdf(id, orderDate);
     } catch (err) {
-      toastError("PDF の取得に失敗しました", String(err));
+      toastError(
+        "PDF の取得に失敗しました",
+        err instanceof Error ? err.message : String(err),
+      );
     } finally {
       setIsPdfLoading(false);
       if (orderId) onApproved?.();

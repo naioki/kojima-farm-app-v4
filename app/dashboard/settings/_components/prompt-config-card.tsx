@@ -18,8 +18,12 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import {
+  getPromptConfig,
+  getPromptHistory,
+  savePromptConfig,
+  testPrompt,
+} from "@/app/actions/config-actions";
 
 type Kind = "text" | "image";
 
@@ -65,17 +69,27 @@ export function PromptConfigCard() {
   const [isTesting, startTest] = useTransition();
 
   useEffect(() => {
-    fetch(`${API_URL}/api/config/prompt`)
-      .then((r) => r.json())
-      .then((data: PromptConfig) => {
+    let cancelled = false;
+    (async () => {
+      const result = await getPromptConfig();
+      if (cancelled) return;
+      if (result.success) {
+        const data = result.data;
         setCfg(data);
         setEnabled(data.is_custom_enabled);
         // カスタム値が無ければデフォルトを下書きの初期値に
         setImageDraft(data.image_prompt ?? data.default_image_prompt);
         setTextDraft(data.text_prompt ?? data.default_text_prompt);
-      })
-      .catch(() => toast.error("プロンプト設定の取得に失敗しました"))
-      .finally(() => setLoading(false));
+      } else {
+        toast.error("プロンプト設定の取得に失敗しました", {
+          description: result.error,
+        });
+      }
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (loading) {
@@ -113,19 +127,18 @@ export function PromptConfigCard() {
   function handleTest() {
     startTest(async () => {
       setTestResult(null);
-      try {
-        const res = await fetch(`${API_URL}/api/config/prompt/test`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ kind: tab, prompt: draft, sample_text: tab === "text" ? sampleText : null }),
-        });
-        const data: TestResult = await res.json();
-        setTestResult(data);
-        if (data.ok) toast.success(data.message || "検証OK");
-        else toast.error(data.message || "検証に失敗しました");
-      } catch {
-        toast.error("テストに失敗しました（バックエンド未接続）");
+      const result = await testPrompt({
+        kind: tab,
+        prompt: draft,
+        sample_text: tab === "text" ? sampleText : undefined,
+      });
+      if (!result.success) {
+        toast.error("テストに失敗しました", { description: result.error });
+        return;
       }
+      setTestResult(result.data);
+      if (result.data.ok) toast.success(result.data.message || "検証OK");
+      else toast.error(result.data.message || "検証に失敗しました");
     });
   }
 
@@ -135,32 +148,26 @@ export function PromptConfigCard() {
       return;
     }
     startSave(async () => {
-      const res = await fetch(`${API_URL}/api/config/prompt`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          image_prompt: imageDraft,
-          text_prompt: textDraft,
-          is_custom_enabled: enabled,
-        }),
+      const result = await savePromptConfig({
+        image_prompt: imageDraft,
+        text_prompt: textDraft,
+        is_custom_enabled: enabled,
       });
-      if (res.ok) {
-        const saved: PromptConfig = await res.json();
-        setCfg((p) => (p ? { ...p, ...saved } : p));
-        toast.success(`プロンプト設定を保存しました（v${saved.version}）`);
+      if (result.success) {
+        setCfg((p) => (p ? { ...p, ...result.data } : p));
+        toast.success(`プロンプト設定を保存しました（v${result.data.version}）`);
       } else {
-        let detail = "保存に失敗しました";
-        try { detail = (await res.json()).detail ?? detail; } catch {}
-        toast.error("保存に失敗しました", { description: detail });
+        toast.error("保存に失敗しました", { description: result.error });
       }
     });
   }
 
   function loadHistory() {
-    fetch(`${API_URL}/api/config/prompt/history`)
-      .then((r) => r.json())
-      .then(setHistory)
-      .catch(() => toast.error("履歴の取得に失敗しました"));
+    (async () => {
+      const result = await getPromptHistory();
+      if (result.success) setHistory(result.data);
+      else toast.error("履歴の取得に失敗しました", { description: result.error });
+    })();
   }
 
   function restoreFromHistory(h: HistoryEntry) {

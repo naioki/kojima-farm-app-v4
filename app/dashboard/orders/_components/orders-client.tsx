@@ -21,10 +21,8 @@ import {
 } from "lucide-react";
 import type { Order, OrderDetail } from "@/app/actions/order-actions";
 import { getOrderDetail, deleteOrder } from "@/app/actions/order-actions";
-import { fetchPdfBlob } from "@/lib/api-client";
+import { downloadOrderLabelPdf } from "@/lib/download";
 import { ItemSheetDialog } from "./item-sheet-dialog";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 interface OrdersClientProps {
   initialOrders: Order[];
@@ -140,16 +138,12 @@ export function OrdersClient({ initialOrders }: OrdersClientProps) {
   function handleDownloadPdf(orderId: string, orderDate: string) {
     startPdf(async () => {
       try {
-        const blob = await fetchPdfBlob(orderId, reverseStoreOrder);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `出荷ラベル_${orderDate.replace(/-/g, "")}.pdf`;
-        a.click();
-        URL.revokeObjectURL(url);
+        await downloadOrderLabelPdf(orderId, orderDate, reverseStoreOrder);
         toast.success("PDFをダウンロードしました");
       } catch (err) {
-        toast.error("PDF生成に失敗しました", { description: String(err) });
+        toast.error("PDF生成に失敗しました", {
+          description: err instanceof Error ? err.message : String(err),
+        });
       }
     });
   }

@@ -2,7 +2,6 @@
 'use server'
 
 import { createClient, createServiceClient } from '@/lib/supabase/server'
-import { fetchPdfBlob } from '@/lib/api-client'
 
 type ActionResult<T = void> =
   | { success: true; data: T }
