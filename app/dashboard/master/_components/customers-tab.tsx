@@ -258,7 +258,7 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
               顧客を追加
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>顧客の追加</DialogTitle>
             </DialogHeader>
@@ -267,8 +267,10 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
         </Dialog>
       </div>
 
-      <div className="rounded-md border">
-        <Table>
+      {/* 狭い画面ではテーブルを横スクロールさせる（以前はブレークポイントが
+          1つも無く、スマホではページ全体が横に伸びていた） */}
+      <div className="rounded-md border overflow-x-auto">
+        <Table className="min-w-[760px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-36 text-center">配送順</TableHead>
@@ -369,7 +371,7 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
                             <span className="sr-only">編集</span>
                           </Button>
                         </DialogTrigger>
-                        <DialogContent>
+                        <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
                           <DialogHeader>
                             <DialogTitle>顧客の編集</DialogTitle>
                           </DialogHeader>

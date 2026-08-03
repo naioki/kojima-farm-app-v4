@@ -197,7 +197,7 @@ export function ProductsTab({ products: initial }: ProductsTabProps) {
               商品を追加
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>商品の追加</DialogTitle>
             </DialogHeader>
@@ -206,8 +206,10 @@ export function ProductsTab({ products: initial }: ProductsTabProps) {
         </Dialog>
       </div>
 
-      <div className="rounded-md border">
-        <Table>
+      {/* 狭い画面ではテーブルを横スクロールさせる（以前はブレークポイントが
+          1つも無く、スマホではページ全体が横に伸びていた） */}
+      <div className="rounded-md border overflow-x-auto">
+        <Table className="min-w-[620px]">
           <TableHeader>
             <TableRow>
               <TableHead>商品名</TableHead>
@@ -263,7 +265,7 @@ export function ProductsTab({ products: initial }: ProductsTabProps) {
                             <span className="sr-only">編集</span>
                           </Button>
                         </DialogTrigger>
-                        <DialogContent>
+                        <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
                           <DialogHeader>
                             <DialogTitle>商品の編集</DialogTitle>
                           </DialogHeader>

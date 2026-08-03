@@ -161,7 +161,7 @@ export function ItemMasterTab({ initialRows }: Props) {
   return (
     <div className="space-y-4">
       <div className="rounded-md border overflow-x-auto">
-        <Table>
+        <Table className="min-w-[820px]">
           <TableHeader>
             <TableRow className="bg-muted/40">
               <TableHead className="min-w-[110px]">品目</TableHead>

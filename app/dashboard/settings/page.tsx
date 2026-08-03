@@ -167,7 +167,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-6 max-w-2xl mx-auto space-y-6">
+    <div className="p-3 max-w-2xl mx-auto space-y-6 md:p-6">
       <div>
         <h1 className="text-2xl font-bold">設定</h1>
         <p className="text-sm text-muted-foreground mt-1">メールサーバー（IMAP）の接続設定</p>
@@ -184,7 +184,7 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>IMAP サーバー *</Label>
               <Input
@@ -204,7 +204,7 @@ export default function SettingsPage() {
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>メールアカウント *</Label>
               <Input
@@ -248,7 +248,7 @@ export default function SettingsPage() {
 
           <Separator />
 
-          <div className="flex gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row">
             <Button onClick={handleSave} disabled={isSaving || isTesting} className="flex-1">
               {isSaving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
               保存
@@ -317,7 +317,7 @@ export default function SettingsPage() {
           {/* LINE Works */}
           <div className="space-y-3">
             <h3 className="font-semibold text-sm text-primary">● LINE Works 連携</h3>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>LINE Works Bot ID</Label>
                 <Input

@@ -315,7 +315,7 @@ export function PriceMasterTab({
               価格を追加
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>価格の追加</DialogTitle>
             </DialogHeader>
@@ -372,8 +372,10 @@ export function PriceMasterTab({
         </DialogContent>
       </Dialog>
 
-      <div className="rounded-md border">
-        <Table>
+      {/* 狭い画面ではテーブルを横スクロールさせる（以前はブレークポイントが
+          1つも無く、スマホではページ全体が横に伸びていた） */}
+      <div className="rounded-md border overflow-x-auto">
+        <Table className="min-w-[820px]">
           <TableHeader>
             <TableRow>
               <TableHead>顧客</TableHead>
