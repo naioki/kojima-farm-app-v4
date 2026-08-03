@@ -104,7 +104,7 @@ export async function getOrderChecklist(
       .select(`
         id, boxes, remainder, total_qty,
         customers!inner(name, supplier_name, sort_order),
-        product_standards!inner(name, products!inner(name))
+        product_standards!inner(name, unit_size, products!inner(name))
       `)
       .eq('order_id', orderId)
 
@@ -124,6 +124,7 @@ export async function getOrderChecklist(
       } | null
       const ps = row.product_standards as unknown as {
         name: string
+        unit_size: number | null
         products: { name: string }
       } | null
       const storeName = customer?.name ?? '—'
@@ -140,6 +141,9 @@ export async function getOrderChecklist(
         spec: ps?.name ?? '',
         boxes: (row.boxes as number) ?? 0,
         remainder: (row.remainder as number) ?? 0,
+        // 数量は入数から計算する。order_lines.total_qty は本番で全行 0 のまま
+        // 投入されていないため、そのまま使うと「計 0」になる。
+        unit: ps?.unit_size ?? null,
         total_qty: (row.total_qty as number) ?? 0,
         sort_order: customer?.sort_order ?? null,
       }
