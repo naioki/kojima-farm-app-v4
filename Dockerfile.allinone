@@ -1,0 +1,98 @@
+# Next.js と FastAPI を1コンテナにまとめる構成（任意）
+#
+# 既存の2サービス構成（ルートの `Dockerfile` + `backend/Dockerfile`）はそのまま
+# 使える。こちらは移行の準備ができたときに切り替えるためのもの。
+# 手順と注意点は docs/DEPLOY.md の「1コンテナ構成」を参照。
+#
+# なぜまとめるか:
+#   - FastAPI を 127.0.0.1 バインドにするので**外部から到達できなくなる**
+#     （JWT 認証を入れたうえで、さらにネットワーク的に閉じる）
+#   - 同一オリジンになるので CORS 設定が不要になる
+#   - デプロイが1回で済む（2サービスを同時に出す必要がなくなる）
+#   - Server Action → API がインターネット往復からループバックになる
+#
+# 代償:
+#   - Node と Python の両方が起動するのでコールドスタートが遅い（min-instances=1 推奨）
+#   - イメージが大きい（node + python + 日本語フォント6MB）
+#   - スケールが連動する（単一農園の負荷なら実質問題にならない）
+
+# ── Stage 1: Next.js のビルド ────────────────────────────────────────────────
+FROM node:20-bookworm-slim AS web-builder
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci --legacy-peer-deps
+
+COPY . .
+# NEXT_PUBLIC_* は .env.production から読み込まれ、ここでインライン化される。
+# Cloud Run の環境変数に後から入れても client bundle には反映されない。
+RUN npm run build
+
+# ── Stage 2: Python 依存の構築 ───────────────────────────────────────────────
+# 実行ステージと同じベースを使う（venv は Python のマイナーバージョンに依存するため）
+FROM node:20-bookworm-slim AS py-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-venv \
+        python3-dev \
+        build-essential \
+        libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ── Stage 3: 実行 ───────────────────────────────────────────────────────────
+FROM node:20-bookworm-slim AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV HOSTNAME="0.0.0.0"
+# FastAPI はループバックのみで待ち受ける（外部からは到達できない）
+ENV INTERNAL_API_PORT=8000
+ENV INTERNAL_API_ORIGIN="http://127.0.0.1:8000"
+# サーバー側から API を呼ぶときの宛先。NEXT_PUBLIC_API_URL より優先される
+ENV API_URL="http://127.0.0.1:8000"
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# python3 本体と、Pillow / ReportLab が実行時に使う共有ライブラリ。
+# manylinux wheel は多くを内包しているが、フォント・JPEG 周りは
+# 入れておくほうが安全（欠けると PDF 生成時に初めて落ちる）。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        libffi8 \
+        libfreetype6 \
+        libjpeg62-turbo \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN addgroup --system --gid 1001 nodejs \
+    && adduser --system --uid 1001 nextjs
+
+# Python 環境
+COPY --from=py-builder /opt/venv /opt/venv
+
+# バックエンド本体（テストや開発用スクリプトは含めない）
+COPY --chown=nextjs:nodejs backend/app /srv/backend/app
+COPY --chown=nextjs:nodejs backend/assets /srv/backend/assets
+
+# 日本語フォントが無いと出荷ラベル PDF を生成できないので、ビルド時に落とす
+RUN test -f /srv/backend/assets/ipaexg.ttf \
+    || (echo "ERROR: backend/assets/ipaexg.ttf not found" && exit 1)
+
+# フロントエンド（standalone 出力）
+COPY --from=web-builder /app/public ./public
+COPY --from=web-builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=web-builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+COPY --chown=nextjs:nodejs docker/allinone-entrypoint.sh /usr/local/bin/allinone-entrypoint.sh
+RUN chmod +x /usr/local/bin/allinone-entrypoint.sh
+
+USER nextjs
+EXPOSE 8080
+
+CMD ["/usr/local/bin/allinone-entrypoint.sh"]

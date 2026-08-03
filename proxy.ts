@@ -43,5 +43,12 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
+  // api/chat を除外している理由:
+  // 外部サービス（Discord / LINE Works / Google Chat）からの Webhook で、
+  // Supabase のセッションクッキーを持たない。ここを通すと毎回
+  // supabase.auth.getUser() の往復が入るだけ無駄で、特に Discord は
+  // 3秒以内の応答を要求するため遅延が問題になる。
+  matcher: [
+    '/((?!api/chat|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
 }

@@ -96,7 +96,110 @@ curl -s -o /dev/null -w "%{http_code}\n" $BACKEND/api/docs
 4. 設定画面が読める（管理者のみ）／「接続テスト」がメールを取り込まない
 5. マスターの配送順を変更 → **リロードしても順番が保たれている**
 
-## 切り戻し
+## 1コンテナ構成（任意・移行用）
+
+`Dockerfile.allinone` を使うと Next.js と FastAPI を1つの Cloud Run サービスに
+まとめられる。**既存の2サービス構成はそのまま使えるので、切り替えは任意。**
+
+### 何が良くなるか
+
+| | 2サービス（現行） | 1コンテナ |
+|---|---|---|
+| バックエンドの公開範囲 | インターネットから到達可能 | `127.0.0.1` バインドで**外部から到達不可** |
+| CORS | `allow_origin_regex` の維持が必要 | 不要（同一オリジン） |
+| デプロイ | 2つを同時に出す必要あり | 1回 |
+| API 呼び出し | インターネット往復 | ループバック |
+| min-instances のコスト | 2サービス分 | 1サービス分 |
+
+### 代償
+
+- **コールドスタートが遅い** — Node と Python の両方が起動する。`--min-instances=1` を推奨。
+- **イメージが大きい** — node + python + 日本語フォント6MB。現行の約200MB → 600〜800MB程度。
+- **スケールが連動する** — 単一農園の負荷なら実質問題にならない。
+
+### 移行手順
+
+**1. Webhook の URL を変更する（外部コンソール作業。これが必須）**
+
+Discord / LINE Works / Google Chat の3つが現在 `kojima-farm-backend-...` を
+向いている。1コンテナ構成ではホスト名が変わるため、各サービスの管理画面で
+登録先を差し替える。
+
+| サービス | 変更後の URL |
+|---|---|
+| Discord（Interactions Endpoint URL） | `https://<統合後のURL>/api/chat/discord` |
+| LINE Works（Callback URL） | `https://<統合後のURL>/api/chat/lineworks` |
+| Google Chat（App URL） | `https://<統合後のURL>/api/chat/googlechat` |
+
+Next.js 側の `app/api/chat/[...path]/route.ts` がこれを内部の FastAPI へ
+中継する。**ボディは生バイトのまま転送**しているので Discord の Ed25519 署名
+検証は壊れない（パースして再シリアライズすると署名が一致しなくなる）。
+
+> `print_agent.py` は Supabase を直接見ているので変更不要。
+
+**2. デプロイする**
+
+```bash
+gcloud run deploy kojima-farm-app \
+  --region asia-northeast1 \
+  --source . \
+  --min-instances 1 \
+  --set-env-vars \
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<ANONキー>,SUPABASE_SERVICE_ROLE_KEY=<service-roleキー>,GEMINI_API_KEY=<Geminiキー>
+```
+
+`--source .` で Cloud Build を使う場合、既定では `Dockerfile` が選ばれる。
+`Dockerfile.allinone` を使うには次のいずれか:
+
+```bash
+# a) Cloud Build の設定でファイルを指定する
+gcloud builds submit --tag gcr.io/kojima-farm/kojima-farm-app \
+  --file Dockerfile.allinone .
+gcloud run deploy kojima-farm-app --image gcr.io/kojima-farm/kojima-farm-app --region asia-northeast1
+
+# b) 切り替えを確定させるなら Dockerfile を置き換える
+git mv Dockerfile Dockerfile.frontend-only
+git mv Dockerfile.allinone Dockerfile
+```
+
+**3. 確認する**
+
+```bash
+URL=https://<統合後のURL>
+
+curl -s $URL/api/health                                       # フロントは 404（Next.js のルートに無い）
+curl -s -o /dev/null -w "%{http_code}\n" $URL/api/chat/discord  # 401 か 400（署名が無いため）＝中継できている
+```
+
+画面が動くこと、PDF が出ること、チャットからの承認が動くことを確認する。
+
+**4. 旧サービスを止める**
+
+動作確認が済んだら:
+
+```bash
+gcloud run services delete kojima-farm-backend --region asia-northeast1
+```
+
+### 環境変数（1コンテナ構成）
+
+`Dockerfile.allinone` が既定値を持っているもの（変更不要）:
+
+```
+INTERNAL_API_PORT=8000
+INTERNAL_API_ORIGIN=http://127.0.0.1:8000   # Webhook 中継の宛先
+API_URL=http://127.0.0.1:8000               # Server Action からの宛先
+```
+
+`INTERNAL_API_ORIGIN` を**設定しなければ** Webhook の中継は 404 を返す。
+つまり2サービス構成では中継ルートは無効のまま無害に存在する。
+
+### 切り戻し
+
+旧サービスを消す前なら、Webhook の URL を戻して従来のフロントを再デプロイする
+だけで戻せる。**旧バックエンドを消すのは動作確認が終わってから。**
+
+## 切り戻し（認証まわり）
 
 `docs/ROLLBACK.md` を参照。認証だけ外すなら再デプロイ不要:
 
