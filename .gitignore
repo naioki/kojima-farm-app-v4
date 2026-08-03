@@ -8,6 +8,9 @@ node_modules/
 out/
 build/
 
+# Cloud Run の切り戻し先の記録（環境ごとの状態なので共有しない）
+.cloudrun-snapshot
+
 # Build artifacts (ビルドで再生成されるためコミットしない)
 *.tsbuildinfo
 .vercel/

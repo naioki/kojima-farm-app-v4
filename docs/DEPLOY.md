@@ -7,6 +7,116 @@
 | `kojima-farm-frontend` | Next.js | `https://kojima-farm-frontend-86362266171.asia-northeast1.run.app` |
 | `kojima-farm-backend` | FastAPI | `https://kojima-farm-backend-86362266171.asia-northeast1.run.app` |
 
+## 切り戻せる状態にしてから上げる（推奨手順）
+
+認証の有効化はフロントとバックエンドの両方に関わるため、素直に順番にデプロイすると
+**途中で必ず全API が 401 になる瞬間**がある。それを避けつつ、いつでも戻せる形で
+上げる手順が下記。所要 15〜20 分。
+
+`AUTH_ENFORCED` を使うのがコツ。認証を後から入れるので、コードの入れ替えと
+認証の有効化を切り離せる。
+
+### 0. 戻す先を記録する
+
+```bash
+./scripts/cloudrun.sh status     # 今の配信状況を確認
+./scripts/cloudrun.sh snapshot   # 戻す先のリビジョンを記録
+```
+
+Cloud Run は過去のリビジョンを保持しているので、切り戻しはトラフィックの
+向き先を変えるだけで数秒で終わる。ただし**戻す先の名前を控えていないと
+慌てて探すことになる**ので必ず先に記録する。
+
+### 1. マイグレーションを適用する
+
+Supabase の SQL Editor で未適用のものを流す。**いずれも追加のみで既存の列や
+テーブルを変更しないため、旧コードのままでも動く**（先に流して問題ない）。
+
+```
+backend/migrations/008_shipping_checklist.sql   ← チェックリストの進捗テーブル
+```
+
+### 2. バックエンドの環境変数を整える
+
+```bash
+gcloud run services update kojima-farm-backend \
+  --region asia-northeast1 \
+  --update-env-vars NEXT_PUBLIC_SUPABASE_ANON_KEY=<ANONキー>,AUTH_ENFORCED=false
+```
+
+**この段階では `AUTH_ENFORCED=false` にする。** 旧フロントエンドはまだ
+トークンを送らないので、ここで認証を有効にすると即座に止まる。
+
+ANON キーは Supabase の **Project Settings > API** から取得する。公開前提の値で、
+service-role キーとは別物。
+
+### 3. バックエンドを上げる
+
+```bash
+gcloud run deploy kojima-farm-backend \
+  --region asia-northeast1 --source backend
+```
+
+この時点の状態: **新バックエンド（認証オフ）+ 旧フロントエンド** → 正常に動く。
+
+確認:
+```bash
+BACKEND=https://kojima-farm-backend-86362266171.asia-northeast1.run.app
+curl -s $BACKEND/api/health     # {"status":"ok","auth_enforced":false}
+```
+
+### 4. フロントエンドを上げる
+
+```bash
+gcloud run deploy kojima-farm-frontend \
+  --region asia-northeast1 --source .
+```
+
+この時点の状態: **新バックエンド（認証オフ）+ 新フロントエンド** → 正常に動く。
+フロントはトークンを送るが、バックエンドが無視するだけ。
+
+ここで画面を一通り確認する（下記「デプロイ後の確認」）。
+
+### 5. 認証を有効にする
+
+```bash
+gcloud run services update kojima-farm-backend \
+  --region asia-northeast1 --update-env-vars AUTH_ENFORCED=true
+```
+
+これで認証が効く。**再デプロイではなく環境変数の変更なので、戻すのも一瞬。**
+
+確認:
+```bash
+curl -s $BACKEND/api/health                                      # auth_enforced:true
+curl -s -o /dev/null -w "%{http_code}\n" $BACKEND/api/orders     # 401 が正しい
+```
+
+### 切り戻し
+
+| 症状 | 戻し方 | かかる時間 |
+|---|---|---|
+| 認証が原因で動かない | `AUTH_ENFORCED=false` に戻す | 数十秒 |
+| 新しいコードが原因で動かない | `./scripts/cloudrun.sh rollback` | 数十秒 |
+| 何が原因か分からない | まず `AUTH_ENFORCED=false`、直らなければ rollback | — |
+
+```bash
+# 認証だけ戻す（再デプロイ不要）
+gcloud run services update kojima-farm-backend \
+  --region asia-northeast1 --update-env-vars AUTH_ENFORCED=false
+
+# コードごと戻す（記録したリビジョンへ）
+./scripts/cloudrun.sh rollback
+```
+
+`rollback` は**フロントエンドから先に**戻す。「旧フロント + 新バックエンド」は
+全API が 401 になるため、その状態を経由しないようにしている。
+
+Console から手で戻す場合は各サービスの「リビジョン > トラフィックを管理」で
+記録したリビジョンに 100% を割り当てる。
+
+---
+
 ## ⚠️ 認証を有効化するデプロイの前に必ず読む
 
 ### 1. バックエンドに `NEXT_PUBLIC_SUPABASE_ANON_KEY` を設定する
