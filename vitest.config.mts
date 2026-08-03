@@ -1,6 +1,9 @@
 import { defineConfig } from "vitest/config";
 import path from "node:path";
 
+// import.meta.dirname を使う（__dirname は ESM 設定では非推奨）
+const rootDir = import.meta.dirname;
+
 /**
  * フロントエンドの純ロジック用テスト設定。
  *
@@ -11,7 +14,7 @@ import path from "node:path";
 export default defineConfig({
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "."),
+      "@": path.resolve(rootDir, "."),
     },
   },
   test: {
