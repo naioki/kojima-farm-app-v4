@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -17,7 +18,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   FileDown, RefreshCw, Package, Mail, FileImage,
-  CheckCircle, Clock, XCircle, Trash2, ArrowUpDown, X,
+  CheckCircle, Clock, XCircle, Trash2, ArrowUpDown, X, ListChecks,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -410,6 +411,19 @@ export function OrdersClient({
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
+                      {/* 積み込み・荷降ろしチェックリスト（スマホ用） */}
+                      <Button
+                        asChild
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1 text-xs"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Link href={`/dashboard/orders/${order.id}/checklist`}>
+                          <ListChecks className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">確認</span>
+                        </Link>
+                      </Button>
                       <Button
                         variant="ghost"
                         size="sm"

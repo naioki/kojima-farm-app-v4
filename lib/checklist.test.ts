@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   boxBreakdown,
   buildChecklist,
+  formatItemTotalBoxes,
+  formatLineBoxes,
+  loadRowKey,
   type ChecklistLine,
 } from "./checklist";
 
@@ -233,5 +236,66 @@ describe("全体の整合性", () => {
     const snapshot = JSON.parse(JSON.stringify(lines));
     buildChecklist(lines);
     expect(lines).toEqual(snapshot);
+  });
+});
+
+describe("箱数の表示", () => {
+  it("端数が無ければ箱数だけ", () => {
+    expect(formatLineBoxes(boxBreakdown({ boxes: 3, remainder: 0 }))).toBe("3箱");
+  });
+
+  it("明細1行の端数箱は中身の数量まで出す", () => {
+    expect(formatLineBoxes(boxBreakdown({ boxes: 3, remainder: 5 }))).toBe(
+      "4箱（うち端数1箱・5）",
+    );
+    expect(formatLineBoxes(boxBreakdown({ boxes: 0, remainder: 5 }))).toBe(
+      "端数1箱（5）",
+    );
+  });
+
+  it("品目ごとの合計は端数を「箱の個数」で出す（数量は出さない）", () => {
+    // A店の端数3個とB店の端数5個は「8個入り1箱」ではなく2箱。
+    // 数量を出すと箱が足りなくなる誤解を招くので出さない。
+    expect(
+      formatItemTotalBoxes({ fullBoxes: 3, fractionBoxes: 2, totalBoxes: 5 }),
+    ).toBe("5箱（うち端数2箱）");
+    expect(
+      formatItemTotalBoxes({ fullBoxes: 0, fractionBoxes: 2, totalBoxes: 2 }),
+    ).toBe("端数2箱");
+    expect(
+      formatItemTotalBoxes({ fullBoxes: 4, fractionBoxes: 0, totalBoxes: 4 }),
+    ).toBe("4箱");
+  });
+
+  it("実データから作った合計と表示が食い違わない", () => {
+    const { itemTotals, unloadGroups } = buildChecklist([
+      line({ id: "a", customer_name: "習志野台", sort_order: 1, boxes: 2, remainder: 4, total_qty: 24 }),
+      line({ id: "b", customer_name: "青葉台", sort_order: 2, boxes: 0, remainder: 6, total_qty: 6 }),
+    ]);
+    // 満量2箱 + 端数2箱（店舗ごとに1箱）= 4箱
+    expect(formatItemTotalBoxes(itemTotals[0])).toBe("4箱（うち端数2箱）");
+    expect(formatLineBoxes(unloadGroups[1].items[0].breakdown)).toBe("端数1箱（6）");
+  });
+});
+
+describe("loadRowKey", () => {
+  it("品目と規格の組で一意になる", () => {
+    expect(loadRowKey("トマト", "M")).toBe("トマト|M");
+    expect(loadRowKey("トマト", "L")).not.toBe(loadRowKey("トマト", "M"));
+  });
+
+  it("規格なしでも衝突しない", () => {
+    expect(loadRowKey("トマト", "")).toBe("トマト|");
+    expect(loadRowKey("トマト", "")).not.toBe(loadRowKey("トマト", "M"));
+  });
+
+  it("itemTotals の各行と1対1で対応する（キーが重複しない）", () => {
+    const { itemTotals } = buildChecklist([
+      line({ id: "a", product_name: "トマト", spec: "M", boxes: 1 }),
+      line({ id: "b", product_name: "トマト", spec: "L", boxes: 1 }),
+      line({ id: "c", product_name: "胡瓜", spec: "", boxes: 1 }),
+    ]);
+    const keys = itemTotals.map((t) => loadRowKey(t.productName, t.spec));
+    expect(new Set(keys).size).toBe(itemTotals.length);
   });
 });
