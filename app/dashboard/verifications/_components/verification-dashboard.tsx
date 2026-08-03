@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { ChevronDown } from "lucide-react";
+import { useState, useEffect, useRef, useMemo, useCallback, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ChevronDown, Loader2 } from "lucide-react";
 import { VerificationList } from "./verification-list";
 import { ImageViewer } from "./image-viewer";
 import { VerificationForm } from "./verification-form";
@@ -9,23 +10,26 @@ import type { PendingVerification, MasterData } from "@/app/actions/ocr-actions"
 import {
   DATE_RANGE_LABELS,
   filterVerifications,
-  isDateRange,
   type DateRange,
 } from "@/lib/verification";
 import { cn } from "@/lib/utils";
 
 type Filter = "pending" | "all";
 
-const DATE_RANGE_STORAGE_KEY = "verificationDateRange";
-
 interface VerificationDashboardProps {
   initialVerifications: PendingVerification[];
   masterData: MasterData;
+  /** サーバー側で取得上限に達したか */
+  truncated?: boolean;
+  /** サーバー側で適用済みの期間（URL の range と一致する） */
+  dateRange: DateRange;
 }
 
 export function VerificationDashboard({
   initialVerifications,
   masterData,
+  truncated = false,
+  dateRange,
 }: VerificationDashboardProps) {
   const [verifications, setVerifications] = useState(initialVerifications);
   const [filter, setFilter] = useState<Filter>("pending");
@@ -34,18 +38,23 @@ export function VerificationDashboard({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 再解析でフォームを作り直すための版数。key に混ぜて再マウントさせる。
   const [formRevision, setFormRevision] = useState(0);
-  const [dateRange, setDateRange] = useState<DateRange>("30d");
   const formRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [isRangeChanging, startRangeChange] = useTransition();
 
-  // localStorage は hydration 後に読む（SSR と初期描画を一致させるため）
-  useEffect(() => {
-    const stored = localStorage.getItem(DATE_RANGE_STORAGE_KEY);
-    if (isDateRange(stored)) setDateRange(stored);
-  }, []);
-
-  function setDateRangeAndSave(range: DateRange) {
-    setDateRange(range);
-    localStorage.setItem(DATE_RANGE_STORAGE_KEY, range);
+  /**
+   * 期間の変更は URL を書き換えてサーバーに再取得させる。
+   * 期間の絞り込みはサーバー側で行っているため、ここで state だけ変えても
+   * 取得済みの窓の外は見えない。
+   */
+  function changeDateRange(range: DateRange) {
+    if (range === dateRange) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("range", range);
+    startRangeChange(() => {
+      router.replace(`?${params.toString()}`, { scroll: false });
+    });
   }
 
   useEffect(() => {
@@ -55,15 +64,12 @@ export function VerificationDashboard({
   // 件数バッジとリストで同じ絞り込みを通す。
   // 以前はバッジが全期間・リストが期間フィルタ後だったため、「未処理 5」と
   // 出ているのに3件しか見えない状態が起きていた。
+  // 期間はサーバー側で適用済みなので、ここでは未処理／全件の切り替えのみ。
   const pendingList = useMemo(
-    () =>
-      filterVerifications(verifications, { onlyPending: true, dateRange }),
-    [verifications, dateRange]
+    () => filterVerifications(verifications, { onlyPending: true, dateRange: "all" }),
+    [verifications]
   );
-  const allList = useMemo(
-    () => filterVerifications(verifications, { onlyPending: false, dateRange }),
-    [verifications, dateRange]
-  );
+  const allList = verifications;
   const filtered = filter === "pending" ? pendingList : allList;
 
   // 選択は state に持つが、実際に表示する対象は絞り込み結果から導出する。
@@ -179,14 +185,15 @@ export function VerificationDashboard({
           </span>
         </button>
       </div>
-      <div className="flex gap-1 px-3 py-2">
+      <div className="flex items-center gap-1 px-3 py-2">
         {(["7d", "30d", "all"] as DateRange[]).map((range) => (
           <button
             key={range}
             type="button"
-            onClick={() => setDateRangeAndSave(range)}
+            onClick={() => changeDateRange(range)}
+            disabled={isRangeChanging}
             aria-pressed={dateRange === range}
-            className={`flex-1 text-[10px] py-1 rounded transition-colors ${
+            className={`flex-1 text-[10px] py-1 rounded transition-colors disabled:opacity-60 ${
               dateRange === range
                 ? "bg-primary text-primary-foreground font-semibold"
                 : "bg-muted text-muted-foreground hover:text-foreground"
@@ -195,7 +202,21 @@ export function VerificationDashboard({
             {DATE_RANGE_LABELS[range]}
           </button>
         ))}
+        {isRangeChanging && (
+          <Loader2
+            className="h-3 w-3 shrink-0 animate-spin text-muted-foreground"
+            aria-label="読み込み中"
+          />
+        )}
       </div>
+      {/* 取得上限に達した場合は黙って切り捨てず明示する。
+          「古い分が見えていない」と気づけないと棚卸しで齟齬が出る。 */}
+      {truncated && (
+        <p className="border-t bg-amber-50 px-3 py-1.5 text-[10px] leading-snug text-amber-800">
+          件数が多いため直近 {initialVerifications.length} 件のみ表示しています。
+          {dateRange !== "7d" && "期間を短くすると全件を確認できます。"}
+        </p>
+      )}
     </div>
   );
 

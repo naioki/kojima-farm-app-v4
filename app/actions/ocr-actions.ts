@@ -8,6 +8,7 @@ import { CorrectedDataSchema, type CorrectedData } from '@/lib/schemas/ocr'
 import { parseVerification as apiParse, verifyOcr, type ParsedLine as ApiParsedLine } from '@/lib/api-client'
 
 import type { OcrStatus } from '@/lib/types/supabase'
+import { dateRangeCutoff, type DateRange } from '@/lib/verification'
 
 type Json = unknown
 
@@ -44,12 +45,23 @@ export type ApproveResult = {
   lines_count: number
 }
 
+/** 1回の取得で読む最大件数。parsed_lines の JSON を含むため上限を設ける。 */
+const VERIFICATION_FETCH_LIMIT = 200
+
+export type VerificationPage = {
+  items: PendingVerification[]
+  /** 上限に達して打ち切られたか。画面で「以降は表示していない」ことを示す。 */
+  truncated: boolean
+  /** 適用した期間。null は全期間。 */
+  dateRange: DateRange
+}
+
 async function _fetchVerifications(
   supabase: Awaited<ReturnType<typeof createClient>>,
   tenantId: string,
-  statusFilter?: string[],
-): Promise<ActionResult<PendingVerification[]>> {
-  const query = supabase
+  options: { statusFilter?: string[]; dateRange: DateRange },
+): Promise<ActionResult<VerificationPage>> {
+  let query = supabase
     .from('ocr_verifications')
     .select(`
       id,
@@ -64,16 +76,38 @@ async function _fetchVerifications(
     `)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
+    // 打ち切りを検出するため上限+1件まで読む
+    .limit(VERIFICATION_FETCH_LIMIT + 1)
 
-  const { data, error } = statusFilter
-    ? await query.in('status', statusFilter as OcrStatus[])
-    : await query
+  // 期間の絞り込みをサーバー側で行う。以前は全件を parsed_lines ごと取得して
+  // からクライアントで期間フィルタを掛けていたため、件数が増えるほど毎回の
+  // 転送量が膨らみ、設計書の目標「クライアント側操作 < 200ms」と衝突していた。
+  const cutoff = dateRangeCutoff(options.dateRange, Date.now())
+  if (cutoff) {
+    query = query.gte('created_at', cutoff.toISOString())
+  }
+
+  if (options.statusFilter) {
+    query = query.in('status', options.statusFilter as OcrStatus[])
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error('[fetchVerifications] DBエラー:', error)
     return { success: false, error: 'データの取得中にエラーが発生しました。' }
   }
-  return { success: true, data: (data ?? []) as unknown as PendingVerification[] }
+
+  const rows = (data ?? []) as unknown as PendingVerification[]
+  const truncated = rows.length > VERIFICATION_FETCH_LIMIT
+  return {
+    success: true,
+    data: {
+      items: truncated ? rows.slice(0, VERIFICATION_FETCH_LIMIT) : rows,
+      truncated,
+      dateRange: options.dateRange,
+    },
+  }
 }
 
 async function _getAuthProfile() {
@@ -88,24 +122,25 @@ async function _getAuthProfile() {
   return { supabase, profile, tenantId }
 }
 
-export async function getPendingVerifications(): Promise<ActionResult<PendingVerification[]>> {
+/**
+ * 指定期間の受注票を取得する。
+ *
+ * 未処理／全件の切り替えは、取得した期間内のデータに対してクライアント側で
+ * 行う（どちらも同じ窓の部分集合なので再取得は不要）。
+ * 一方で期間の絞り込みはサーバー側で行う。全件を parsed_lines ごと読むのを
+ * やめるのが目的なので、ここを緩めると意味がなくなる。
+ *
+ * 旧 getPendingVerifications は呼び出し箇所が無く削除した。
+ */
+export async function getVerifications(
+  dateRange: DateRange = '30d',
+): Promise<ActionResult<VerificationPage>> {
   try {
     const auth = await _getAuthProfile()
     if ('error' in auth) return { success: false, error: auth.error! }
-    return _fetchVerifications(auth.supabase, auth.tenantId, ['pending', 'needs_review'])
+    return _fetchVerifications(auth.supabase, auth.tenantId, { dateRange })
   } catch (err) {
-    console.error('[getPendingVerifications] 予期しないエラー:', err)
-    return { success: false, error: '予期しないエラーが発生しました。' }
-  }
-}
-
-export async function getAllVerifications(): Promise<ActionResult<PendingVerification[]>> {
-  try {
-    const auth = await _getAuthProfile()
-    if ('error' in auth) return { success: false, error: auth.error! }
-    return _fetchVerifications(auth.supabase, auth.tenantId)
-  } catch (err) {
-    console.error('[getAllVerifications] 予期しないエラー:', err)
+    console.error('[getVerifications] 予期しないエラー:', err)
     return { success: false, error: '予期しないエラーが発生しました。' }
   }
 }
