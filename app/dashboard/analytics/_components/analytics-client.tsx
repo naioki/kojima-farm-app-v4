@@ -1,5 +1,8 @@
 "use client";
 
+import { AlertTriangle } from "lucide-react";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import type { MonthlySales, ItemSales, CustomerSales, OpsStatus } from "@/app/actions/analytics-actions";
 
 function fmt(n: number) {
@@ -39,14 +42,14 @@ function BarChart({ data, current }: { data: MonthlySales[]; current: string }) 
               width={w}
               height={barH}
               rx={3}
-              fill={isCurrent ? "#16a34a" : "#86efac"}
+              className={isCurrent ? "fill-primary" : "fill-primary/35"}
             />
             <text
               x={x + w / 2}
               y={h + 14}
               textAnchor="middle"
               fontSize={9}
-              fill="#6b7280"
+              className="fill-muted-foreground"
             >
               {d.month.slice(5)}月
             </text>
@@ -62,9 +65,10 @@ interface Props {
   items: ItemSales[];
   customers: CustomerSales[];
   ops: OpsStatus;
+  failed?: string[];
 }
 
-export function AnalyticsClient({ monthly, items, customers, ops }: Props) {
+export function AnalyticsClient({ monthly, items, customers, ops, failed = [] }: Props) {
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const prevMonth = (() => {
@@ -86,6 +90,18 @@ export function AnalyticsClient({ monthly, items, customers, ops }: Props) {
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto">
       <h1 className="text-xl font-semibold">売上ダッシュボード</h1>
+
+      {/* 取得に失敗した集計を明示する。以前は失敗も「データなし」と表示され
+          区別がつかなかった。 */}
+      {failed.length > 0 && (
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>一部の集計を取得できませんでした</AlertTitle>
+          <AlertDescription>
+            {failed.join("・")} の取得に失敗しています。表示されている数値は不完全です。
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -147,7 +163,7 @@ export function AnalyticsClient({ monthly, items, customers, ops }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {curItems
+                {[...curItems]
                   .sort((a, b) => Number(b.subtotal_excl_tax) - Number(a.subtotal_excl_tax))
                   .slice(0, 10)
                   .map((r) => (
@@ -183,7 +199,7 @@ export function AnalyticsClient({ monthly, items, customers, ops }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {curCustomers
+                {[...curCustomers]
                   .sort((a, b) => Number(b.total_incl_tax) - Number(a.total_incl_tax))
                   .map((r) => (
                     <tr key={r.customer_name} className="border-b last:border-0">

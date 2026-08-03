@@ -1,8 +1,42 @@
 'use client'
 
+/**
+ * ログイン画面。
+ *
+ * 以前は shadcn のコンポーネントもデザイントークンも使わず、生の HTML に
+ * bg-gray-50 / bg-white / bg-green-600 / focus:ring-green-500 を直接書いていた。
+ * ユーザーが最初に見る画面がアプリ本体と別物の見た目になっていたため、
+ * 他画面と同じ部品・同じトークンで組み直している。
+ */
+
 import { useState } from 'react'
+import { Eye, EyeOff, Loader2, Sprout } from 'lucide-react'
+
 import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const LOGIN_TIMEOUT_MS = 15_000
+const RESET_TIMEOUT_MS = 10_000
+
+/** 一定時間で必ず決着させる（ネットワークが不通のとき無限に待たせないため）。 */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('timeout')), ms)
+    ),
+  ])
+}
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -12,7 +46,6 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [resetMode, setResetMode] = useState(false)
   const [resetSent, setResetSent] = useState(false)
-  const router = useRouter()
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -21,16 +54,14 @@ export default function LoginPage() {
 
     try {
       const supabase = createClient()
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('timeout')), 15000)
-      )
-      const { error } = await Promise.race([
+      const { error } = await withTimeout(
         supabase.auth.signInWithPassword({ email, password }),
-        timeout,
-      ])
+        LOGIN_TIMEOUT_MS
+      )
       if (error) {
         setError('メールアドレスまたはパスワードが正しくありません。')
       } else {
+        // クッキーを確実に反映させるためフルリロードで遷移する
         window.location.href = '/dashboard/verifications'
       }
     } catch {
@@ -47,17 +78,16 @@ export default function LoginPage() {
 
     try {
       const supabase = createClient()
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('timeout')), 10000)
-      )
-      const { error } = await Promise.race([
+      const { error } = await withTimeout(
         supabase.auth.resetPasswordForEmail(email, {
           redirectTo: `${window.location.origin}/login`,
         }),
-        timeout,
-      ])
+        RESET_TIMEOUT_MS
+      )
       if (error) {
-        setError('リセットメールの送信に失敗しました。メールアドレスを確認してください。')
+        setError(
+          'リセットメールの送信に失敗しました。メールアドレスを確認してください。'
+        )
       } else {
         setResetSent(true)
       }
@@ -68,131 +98,142 @@ export default function LoginPage() {
     }
   }
 
-  if (resetMode) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-          <h1 className="text-2xl font-bold text-center mb-2">小島農園 管理システム</h1>
-          <p className="text-center text-gray-500 text-sm mb-6">パスワードのリセット</p>
+  function backToLogin() {
+    setResetMode(false)
+    setResetSent(false)
+    setError('')
+  }
 
-          {resetSent ? (
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader className="space-y-2 text-center">
+          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-primary/10">
+            <Sprout className="h-6 w-6 text-primary" aria-hidden />
+          </div>
+          <CardTitle className="text-xl">小島農園 管理システム</CardTitle>
+          <CardDescription>
+            {resetMode ? 'パスワードのリセット' : 'ログイン'}
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent>
+          {resetMode && resetSent ? (
             <div className="space-y-4">
-              <p className="text-green-700 bg-green-50 border border-green-200 rounded-md px-4 py-3 text-sm">
-                リセット用のメールを送信しました。メールボックスをご確認ください。
-              </p>
-              <button
-                type="button"
-                onClick={() => { setResetMode(false); setResetSent(false) }}
-                className="w-full text-sm text-green-600 hover:underline"
-              >
+              <Alert>
+                <AlertDescription>
+                  リセット用のメールを送信しました。メールボックスをご確認ください。
+                </AlertDescription>
+              </Alert>
+              <Button variant="outline" className="w-full" onClick={backToLogin}>
                 ログイン画面に戻る
-              </button>
+              </Button>
             </div>
-          ) : (
+          ) : resetMode ? (
             <form onSubmit={handleReset} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  登録済みのメールアドレス
-                </label>
-                <input
+              <div className="space-y-2">
+                <Label htmlFor="reset-email">登録済みのメールアドレス</Label>
+                <Input
+                  id="reset-email"
                   type="email"
+                  autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   placeholder="info@example.com"
                 />
               </div>
 
-              {error && <p className="text-red-600 text-sm">{error}</p>}
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-md text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {loading ? '送信中...' : 'リセットメールを送信'}
-              </button>
-
-              <button
+              </Button>
+              <Button
                 type="button"
-                onClick={() => { setResetMode(false); setError('') }}
-                className="w-full text-sm text-gray-500 hover:underline"
+                variant="ghost"
+                className="w-full"
+                onClick={backToLogin}
               >
                 ログイン画面に戻る
-              </button>
+              </Button>
+            </form>
+          ) : (
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email">メールアドレス</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  placeholder="info@example.com"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="password">パスワード</Label>
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    placeholder="••••••••"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={
+                      showPassword ? 'パスワードを隠す' : 'パスワードを表示する'
+                    }
+                    aria-pressed={showPassword}
+                    className="absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {loading ? 'ログイン中...' : 'ログイン'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full text-muted-foreground"
+                onClick={() => {
+                  setResetMode(true)
+                  setError('')
+                }}
+              >
+                パスワードを忘れた方はこちら
+              </Button>
             </form>
           )}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-        <h1 className="text-2xl font-bold text-center mb-2">小島農園 管理システム</h1>
-        <p className="text-center text-gray-500 text-sm mb-6">ログイン</p>
-
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              メールアドレス
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-              placeholder="info@example.com"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              パスワード
-            </label>
-            <div className="relative">
-              <input
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="w-full border border-gray-300 rounded-md px-3 py-2 pr-16 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="••••••••"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 text-sm"
-              >
-                {showPassword ? '非表示' : '表示'}
-              </button>
-            </div>
-          </div>
-
-          {error && (
-            <p className="text-red-600 text-sm">{error}</p>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-md text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? 'ログイン中...' : 'ログイン'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { setResetMode(true); setError('') }}
-            className="w-full text-sm text-gray-500 hover:underline"
-          >
-            パスワードを忘れた方はこちら
-          </button>
-        </form>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

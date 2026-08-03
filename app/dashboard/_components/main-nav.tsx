@@ -25,7 +25,10 @@ export function MainNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="flex items-center gap-1 flex-1 overflow-x-auto whitespace-nowrap scrollbar-none">
+    <nav
+      aria-label="メインナビゲーション"
+      className="flex items-center gap-1 flex-1 overflow-x-auto whitespace-nowrap scrollbar-none"
+    >
       {navItems.map((item) => {
         const active = pathname.startsWith(item.href);
         const Icon = item.icon;
@@ -33,6 +36,7 @@ export function MainNav() {
           <Link
             key={item.href}
             href={item.href}
+            aria-current={active ? "page" : undefined}
             className={cn(
               "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition-colors shrink-0",
               active
@@ -40,9 +44,10 @@ export function MainNav() {
                 : "text-muted-foreground hover:text-foreground hover:bg-muted"
             )}
           >
-            <Icon className="w-4 h-4" />
-            <span className="hidden md:inline">{item.label}</span>
-            <span className="md:hidden">{item.label}</span>
+            <Icon className="w-4 h-4 shrink-0" />
+            {/* 以前は hidden md:inline と md:hidden の span が同じラベルを
+                出力していて分岐に意味がなかった。1つにまとめている。 */}
+            <span>{item.label}</span>
           </Link>
         );
       })}
