@@ -7,6 +7,69 @@
 | `kojima-farm-frontend` | Next.js | `https://kojima-farm-frontend-86362266171.asia-northeast1.run.app` |
 | `kojima-farm-backend` | FastAPI | `https://kojima-farm-backend-86362266171.asia-northeast1.run.app` |
 
+## どこで実行するか（初回の準備）
+
+作業は2か所に分かれる。混ぜると分かりにくいので先に整理する。
+
+| やること | 場所 |
+|---|---|
+| マイグレーションの適用 | **ブラウザ**（Supabase の SQL Editor） |
+| `gcloud` コマンド | **ターミナル**（PC か Cloud Shell） |
+| 動作確認 | **ブラウザ**（アプリの画面） |
+
+### 選択肢A: Cloud Shell（おすすめ・インストール不要）
+
+ブラウザだけで完結する。gcloud が最初から入っていて認証も済んでいる。
+
+1. https://console.cloud.google.com/ を開く
+2. 右上の **`>_`（Cloud Shell をアクティブにする）** をクリック
+3. 画面下にターミナルが開くので、そこで作業する
+
+```bash
+# 初回だけ: リポジトリを取得
+gcloud config set project kojima-farm
+git clone https://github.com/naioki/kojima-farm-app-v4.git
+cd kojima-farm-app-v4
+```
+
+> Cloud Shell はしばらく使わないと中身が消えることがある。その場合は
+> `git clone` からやり直せばよい。
+
+### 選択肢B: 自分のPC
+
+`gcloud` のインストールと認証が必要。
+
+```bash
+# 1. Google Cloud SDK をインストール
+#    https://cloud.google.com/sdk/docs/install
+
+# 2. ログインとプロジェクト設定（初回だけ）
+gcloud auth login
+gcloud config set project kojima-farm
+
+# 3. リポジトリを取得（すでにあれば cd するだけ）
+git clone https://github.com/naioki/kojima-farm-app-v4.git
+cd kojima-farm-app-v4
+```
+
+### どのコードを上げるか
+
+`gcloud run deploy --source .` は**今いるディレクトリの中身**をそのまま上げる。
+つまり checkout しているブランチが上がる。
+
+```bash
+# 改修版を上げる場合
+git fetch origin
+git checkout claude/design-uiux-flow-review-ib6kxu
+git pull
+```
+
+**master にマージする前にこのブランチのまま上げて確認するのを勧める。**
+問題があればリビジョンを戻すだけで済み、master は汚れない。
+確認できてからマージすればよい。
+
+---
+
 ## 切り戻せる状態にしてから上げる（推奨手順）
 
 認証の有効化はフロントとバックエンドの両方に関わるため、素直に順番にデプロイすると
