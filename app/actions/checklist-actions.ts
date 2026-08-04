@@ -39,6 +39,14 @@ export type ChecklistMode = 'load' | 'unload'
 /** 進捗の保持期間。運用上1週間を過ぎたら不要。 */
 const RETENTION_DAYS = 7
 
+/**
+ * row_key の最大長。
+ *
+ * 実際に入るのは order_lines.id（UUID = 36文字）だけ。ここを無制限にすると
+ * 巨大な文字列を好きなだけ書き込める入口になるので、余裕を持たせて閉じる。
+ */
+const MAX_ROW_KEY_LENGTH = 64
+
 export type OrderChecklist = {
   orderId: string
   orderDate: string
@@ -96,13 +104,13 @@ export async function getOrderChecklist(
       .select('id, order_date')
       .eq('id', orderId)
       .eq('tenant_id', tenantId)
-      .single()
+      .maybeSingle()
     if (!order) return { success: false, error: '受注が見つかりません。' }
 
     const { data: lines, error: linesError } = await db(supabase)
       .from('order_lines')
       .select(`
-        id, boxes, remainder, total_qty,
+        id, customer_id, boxes, remainder, total_qty,
         customers!inner(name, supplier_name, sort_order),
         product_standards!inner(name, unit_size, products!inner(name))
       `)
@@ -135,6 +143,8 @@ export async function getOrderChecklist(
 
       return {
         id: row.id as string,
+        // 店舗のまとめ方は ID を基準にする（同名の別店舗が合併しないように）
+        customer_id: (row.customer_id as string) ?? null,
         customer_name: storeName,
         customer_display: display,
         product_name: ps?.products?.name ?? '—',
@@ -194,18 +204,32 @@ export async function setChecklistItem(
     if (mode !== 'load' && mode !== 'unload') {
       return { success: false, error: '不正なモードです。' }
     }
+    if (!rowKey || rowKey.length > MAX_ROW_KEY_LENGTH) {
+      return { success: false, error: '不正な行キーです。' }
+    }
     const auth = await getAuth()
     if (!auth.ok) return { success: false, error: auth.error }
     const { supabase, tenantId, userId } = auth.ctx
 
-    // 対象の受注が自テナントのものか確認する
-    const { data: order } = await db(supabase)
-      .from('orders')
-      .select('id')
-      .eq('id', orderId)
-      .eq('tenant_id', tenantId)
-      .single()
+    // 対象の受注が自テナントのものか確認する。
+    // あわせて row_key が本当にこの受注の明細かも確認する（他受注の明細 ID や
+    // 適当な文字列で行を作られないように、書き込む前に存在を確かめる）。
+    const [{ data: order }, { data: line }] = await Promise.all([
+      db(supabase)
+        .from('orders')
+        .select('id')
+        .eq('id', orderId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle(),
+      db(supabase)
+        .from('order_lines')
+        .select('id')
+        .eq('id', rowKey)
+        .eq('order_id', orderId)
+        .maybeSingle(),
+    ])
     if (!order) return { success: false, error: '受注が見つかりません。' }
+    if (!line) return { success: false, error: '対象の明細が見つかりません。' }
 
     if (checked) {
       const { error } = await db(supabase)
@@ -239,6 +263,11 @@ export async function setChecklistItem(
       }
     }
 
+    // この revalidatePath は外さないこと。
+    // 画面は useOptimistic でチェックを先に描いており、transition が終わると
+    // 表示はサーバーから来た値に戻る。ここで再検証しないと、保存は成功して
+    // いるのにチェックが消えたように見える。ついでに、同じ受注を開いている
+    // 別の作業者の画面も次の操作で追従する。
     revalidatePath(`/dashboard/orders/${orderId}/checklist`)
     return { success: true, data: undefined }
   } catch (err) {

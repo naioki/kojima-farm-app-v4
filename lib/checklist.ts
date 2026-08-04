@@ -26,6 +26,15 @@
 /** チェックリストの入力。受注明細（OrderLine）がそのまま渡せる形。 */
 export type ChecklistLine = {
   id: string;
+  /**
+   * 店舗の ID。店舗のまとめ方はこれを基準にする。
+   *
+   * 店舗名で束ねると、系列の違う同名店舗（別チェーンの「中央店」など）が
+   * 1店舗に合併され、箱数が合算されて配送先も片方の名前しか出なくなる。
+   * 現状のデータに同名店舗は無いが、増えた瞬間に静かに壊れるため ID で束ねる。
+   * 未指定なら店舗名にフォールバックする（テスト・古い呼び出し用）。
+   */
+  customer_id?: string | null;
   customer_name: string;
   /** 帳票表示用の供給先名（系列＋店舗）。無ければ customer_name を使う。 */
   customer_display?: string;
@@ -110,12 +119,12 @@ export type StoreChecklistItem = {
 
 /** 降ろすとき用: 店舗単位のまとまり。 */
 export type StoreChecklistGroup = {
+  /** 店舗の識別子（customer_id、無ければ店舗名）。React の key や突き合わせに使う */
+  customerKey: string;
   customerName: string;
   /** 帳票と同じ供給先表示（系列＋店舗） */
   customerDisplay: string;
   sortOrder: number;
-  /** 配送順に振った通し番号（1 始まり）。「3軒目」のように使う */
-  stopNumber: number;
   items: StoreChecklistItem[];
   /** この店で降ろす箱の総数 */
   totalBoxes: number;
@@ -184,26 +193,29 @@ function sortOrderOf(line: ChecklistLine): number {
   return line.sort_order ?? UNKNOWN_SORT_ORDER;
 }
 
+/** 店舗をまとめる基準。ID があればそれ、無ければ店舗名。 */
+function storeKeyOf(line: ChecklistLine): string {
+  return line.customer_id || line.customer_name;
+}
+
 /**
  * 店舗ごとにまとめる。
  *
  * 並びは配送順（sort_order 昇順）＝**積む順**。習志野台（sort_order=1）が
  * 最初に積まれてトラックの奥に入り、最後に積んだ店舗が手前になる。
- * stopNumber（何軒目か）はここでは振らない（積む順と降ろす順の両方で
- * 意味が変わるため、呼び出し側の buildChecklist で振る）。
  *
- * 同順位なら店舗名（五十音）で安定させる。
+ * まとめる基準は店舗 ID（storeKeyOf）。同順位なら店舗名（五十音）で安定させる。
  */
-function buildStoreGroups(lines: ChecklistLine[]): Omit<StoreChecklistGroup, "stopNumber">[] {
+function buildStoreGroups(lines: ChecklistLine[]): StoreChecklistGroup[] {
   const byStore = new Map<string, ChecklistLine[]>();
   for (const line of lines) {
-    const key = line.customer_name;
+    const key = storeKeyOf(line);
     const bucket = byStore.get(key);
     if (bucket) bucket.push(line);
     else byStore.set(key, [line]);
   }
 
-  const groups = Array.from(byStore.entries()).map(([customerName, storeLines]) => {
+  const groups = Array.from(byStore.entries()).map(([customerKey, storeLines]) => {
     const sortOrder = Math.min(...storeLines.map(sortOrderOf));
     const items: StoreChecklistItem[] = storeLines
       .map((line) => ({
@@ -218,8 +230,9 @@ function buildStoreGroups(lines: ChecklistLine[]): Omit<StoreChecklistGroup, "st
       .sort((a, b) => a.label.localeCompare(b.label, "ja"));
 
     return {
-      customerName,
-      customerDisplay: storeLines[0].customer_display || customerName,
+      customerKey,
+      customerName: storeLines[0].customer_name,
+      customerDisplay: storeLines[0].customer_display || storeLines[0].customer_name,
       sortOrder,
       items,
       totalBoxes: items.reduce((sum, item) => sum + item.breakdown.totalBoxes, 0),
@@ -247,7 +260,7 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
       fullBoxes: number;
       fractionBoxes: number;
       totalQty: number;
-      // customer_name をキーに、表示名と配送順を持つ。
+      // 店舗キー（storeKeyOf）ごとに、表示名と配送順を持つ。
       // 同じ店舗が複数明細（品目違い）で出てきても1件にまとめるため Map にする。
       stores: Map<string, { display: string; sortOrder: number }>;
     }
@@ -265,7 +278,7 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
       entry.fullBoxes += breakdown.fullBoxes;
       entry.fractionBoxes += breakdown.fractionBoxes;
       entry.totalQty += lineQuantity(line);
-      entry.stores.set(line.customer_name, storeEntry);
+      entry.stores.set(storeKeyOf(line), storeEntry);
     } else {
       byItem.set(key, {
         productName: line.product_name,
@@ -273,7 +286,7 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
         fullBoxes: breakdown.fullBoxes,
         fractionBoxes: breakdown.fractionBoxes,
         totalQty: lineQuantity(line),
-        stores: new Map([[line.customer_name, storeEntry]]),
+        stores: new Map([[storeKeyOf(line), storeEntry]]),
       });
     }
   }
@@ -309,34 +322,21 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
  *
  * - `loadGroups`: 配送順（sort_order 昇順）。積むときに使う。
  * - `unloadGroups`: loadGroups の逆順。降ろすときに使う。
- * - stopNumber（「3軒目」のように現場で会話するための通し番号）は
- *   **降ろす順**を基準に振る。トラックが実際に回る順（＝降ろす順）に
- *   対して数えるのが自然なため。積む順（loadGroups）側は、同じ店舗の
- *   stopNumber をそのまま引き継ぐ（習志野台は積む1番目だが、降ろすのは
- *   最後＝最大の stopNumber になる）。
- * - `itemTotals`: 品目・規格ごとの合計。積み込みの数え漏れ検算用の参考情報。
+ * - `itemTotals`: 品目・規格ごとの合計。積む前の総数確認に使う。
+ *
+ * 「何軒目か」の通し番号は**画面側で並びの位置から出す**。積む順と降ろす順で
+ * 番号が変わる（習志野台は積む1軒目・降ろす最後）ため、ここで片方の基準の
+ * 番号を持たせると、表示中のモードと食い違う番号が紛れ込む。
  */
 export function buildChecklist(lines: ChecklistLine[]): Checklist {
-  const byLoadOrder = buildStoreGroups(lines);
-  const byUnloadOrder = [...byLoadOrder].reverse();
-
-  const unloadGroups: StoreChecklistGroup[] = byUnloadOrder.map((group, index) => ({
-    ...group,
-    stopNumber: index + 1,
-  }));
-  const stopNumberByStore = new Map(
-    unloadGroups.map((group) => [group.customerName, group.stopNumber]),
-  );
-  const loadGroups: StoreChecklistGroup[] = byLoadOrder.map((group) => ({
-    ...group,
-    stopNumber: stopNumberByStore.get(group.customerName)!,
-  }));
+  const loadGroups = buildStoreGroups(lines);
+  const unloadGroups = [...loadGroups].reverse();
 
   return {
     unloadGroups,
     loadGroups,
     itemTotals: buildItemTotals(lines),
-    totalBoxes: unloadGroups.reduce((sum, group) => sum + group.totalBoxes, 0),
-    totalStores: unloadGroups.length,
+    totalBoxes: loadGroups.reduce((sum, group) => sum + group.totalBoxes, 0),
+    totalStores: loadGroups.length,
   };
 }

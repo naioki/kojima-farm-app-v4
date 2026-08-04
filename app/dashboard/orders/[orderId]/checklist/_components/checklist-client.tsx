@@ -39,7 +39,11 @@ import {
   type ChecklistMode,
   type OrderChecklist,
 } from "@/app/actions/checklist-actions";
-import { formatLineBoxes, type StoreChecklistGroup } from "@/lib/checklist";
+import {
+  formatItemTotalBoxes,
+  formatLineBoxes,
+  type StoreChecklistGroup,
+} from "@/lib/checklist";
 import { cn } from "@/lib/utils";
 
 type CheckedState = Record<ChecklistMode, Set<string>>;
@@ -87,7 +91,7 @@ function ProgressBar({ done, total }: { done: number; total: number }) {
       role="progressbar"
       aria-valuenow={done}
       aria-valuemin={0}
-      aria-valuemax={total}
+      aria-valuemax={Math.max(total, 1)}
     >
       <div
         className={cn(
@@ -164,14 +168,20 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
     unload: null,
   });
 
+  // サーバーから来たチェック状態。毎レンダーで Set を作り直さないよう固定する。
+  const serverChecked = useMemo<CheckedState>(
+    () => ({
+      load: new Set(initial.checked.load),
+      unload: new Set(initial.checked.unload),
+    }),
+    [initial.checked],
+  );
+
   const [checkedState, applyOptimistic] = useOptimistic<
     CheckedState,
     { mode: ChecklistMode; rowKey: string; checked: boolean }
   >(
-    {
-      load: new Set(initial.checked.load),
-      unload: new Set(initial.checked.unload),
-    },
+    serverChecked,
     (state, action) => {
       const next: CheckedState = {
         load: new Set(state.load),
@@ -219,9 +229,15 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
     () =>
       groups.map((group) => {
         const doneItems = group.items.filter((item) => checked.has(item.lineId)).length;
+        // 残り箱数は「未チェックの行」で数える。店舗単位で数えると、
+        // 途中まで終わった店舗の済んだ分まで残りに入って多く出てしまう。
+        const remainingBoxes = group.items
+          .filter((item) => !checked.has(item.lineId))
+          .reduce((sum, item) => sum + item.breakdown.totalBoxes, 0);
         return {
           group,
           doneItems,
+          remainingBoxes,
           complete: group.items.length > 0 && doneItems === group.items.length,
         };
       }),
@@ -229,14 +245,17 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
   );
 
   const doneStores = storeStatus.filter((s) => s.complete).length;
-  const remainingBoxes = storeStatus
-    .filter((s) => !s.complete)
-    .reduce((sum, s) => sum + s.group.totalBoxes, 0);
+  const remainingBoxes = storeStatus.reduce((sum, s) => sum + s.remainingBoxes, 0);
 
   // 「今の店舗」は未完了の先頭。手で選んだらそちらを優先する。
+  // 選択中に明細が変わって範囲外になっても空白にならないよう丸め込む。
   const autoIndex = storeStatus.findIndex((s) => !s.complete);
+  const fallbackIndex = autoIndex >= 0 ? autoIndex : groups.length - 1;
+  const override = indexOverride[mode];
   const currentIndex =
-    indexOverride[mode] ?? (autoIndex >= 0 ? autoIndex : groups.length - 1);
+    override !== null && override >= 0 && override < groups.length
+      ? override
+      : fallbackIndex;
   const current: StoreChecklistGroup | undefined = groups[currentIndex];
   const currentStatus = storeStatus[currentIndex];
 
@@ -367,7 +386,7 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
           </p>
           <ol className="mt-2 space-y-1">
             {storeStatus.map((status, index) => (
-              <li key={status.group.customerName}>
+              <li key={status.group.customerKey}>
                 <button
                   type="button"
                   onClick={() =>
@@ -415,6 +434,37 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
             ))}
           </ol>
         </div>
+      )}
+
+      {/* 積む前の総数確認（品目ごとの合計）。マニュアルの「1-4. 総数を先に数える」用。
+          チェック対象ではなく検算用なので、開いたときだけ出す。 */}
+      {mode === "load" && checklist.itemTotals.length > 0 && (
+        <details className="border-t px-4 py-3">
+          <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
+            品目ごとの合計（積む前の総数確認）
+          </summary>
+          <ul className="mt-2 space-y-1.5">
+            {checklist.itemTotals.map((total) => (
+              <li
+                key={`${total.productName}|${total.spec}`}
+                className="rounded-md bg-muted/40 px-2.5 py-2 text-xs"
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="min-w-0 truncate font-medium">{total.label}</span>
+                  <span className="shrink-0 font-mono">
+                    {formatItemTotalBoxes(total)}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                  {total.storeNames.join("・")}
+                </p>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+            端数箱は店舗ごとに別の箱です。中身を足して1箱にまとめられません。
+          </p>
+        </details>
       )}
 
       {/* やり直し */}

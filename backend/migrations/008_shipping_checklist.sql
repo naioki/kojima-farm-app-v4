@@ -4,9 +4,10 @@
 --   * 1行 = 「チェック済み」1件。チェックを外すときは行を削除する。
 --     フラグ列にせず存在で表すことで、複数人が同時に触っても
 --     UPSERT / DELETE だけで済み、後から上書きして戻る事故が起きない。
---   * row_key は用途で意味が変わる（どちらも文字列で表せる）:
---       mode='unload' → order_lines.id（店舗ごとの明細1行）
---       mode='load'   → "品目|規格"（品目ごとの合計1行）
+--   * row_key は order_lines.id（明細1行）。積み込み・荷降ろしとも
+--     「店舗ごとの明細1行」を単位にチェックするので、mode によらず同じ意味。
+--     mode を分けているのは、同じ明細を積むとき・降ろすときで
+--     それぞれ独立にチェックできるようにするため。
 --   * 受注が削除されたら進捗も消える（ON DELETE CASCADE）。
 --
 -- 保持期間:
@@ -18,7 +19,7 @@ CREATE TABLE IF NOT EXISTS shipping_checklist_checks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
     order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-    -- 'load' = 積み込み（品目ごと） / 'unload' = 荷降ろし（店舗ごと）
+    -- 'load' = 積み込み / 'unload' = 荷降ろし（どちらも店舗ごとの明細単位）
     mode TEXT NOT NULL CHECK (mode IN ('load', 'unload')),
     row_key TEXT NOT NULL,
     checked_by UUID REFERENCES profiles(id) ON DELETE SET NULL,

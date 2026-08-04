@@ -139,27 +139,65 @@ describe("降ろすとき（積んだ順の逆）", () => {
     ]);
   });
 
-  it("何軒目かの通し番号は降ろす順に振る（八柱が1軒目）", () => {
-    const { unloadGroups } = buildChecklist(lines);
-    expect(unloadGroups.map((g) => g.stopNumber)).toEqual([1, 2, 3]);
-  });
-
-  it("積む順の通し番号は、同じ店舗の降ろす順番号を引き継ぐ", () => {
-    // 習志野台は積む1番目だが、降ろすのは最後（3軒目）なので stopNumber=3
-    const { loadGroups } = buildChecklist(lines);
-    expect(loadGroups.map((g) => ({ name: g.customerName, stop: g.stopNumber }))).toEqual([
-      { name: "習志野台", stop: 3 },
-      { name: "青葉台", stop: 2 },
-      { name: "八柱", stop: 1 },
-    ]);
-  });
-
   it("降ろす順と積む順は同じ集合（取り違えて中身が減らない）", () => {
     const { loadGroups, unloadGroups } = buildChecklist(lines);
     expect(loadGroups).toHaveLength(unloadGroups.length);
     expect([...loadGroups].reverse().map((g) => g.customerName)).toEqual(
       unloadGroups.map((g) => g.customerName),
     );
+  });
+});
+
+describe("同名の別店舗（系列違い）", () => {
+  // 「中央店」がA系列・B系列の両方にある状況。店舗名で束ねると1店舗に
+  // 合併され、箱数が合算されて片方の名前しか出なくなる（＝配送先を間違える）。
+  const lines = [
+    line({
+      id: "a1",
+      customer_id: "cust-a",
+      customer_name: "中央店",
+      customer_display: "A系列 中央店",
+      sort_order: 1,
+      boxes: 2,
+    }),
+    line({
+      id: "b1",
+      customer_id: "cust-b",
+      customer_name: "中央店",
+      customer_display: "B系列 中央店",
+      sort_order: 2,
+      boxes: 3,
+    }),
+  ];
+
+  it("店舗 ID が違えば別の店舗として扱う", () => {
+    const { loadGroups, totalStores } = buildChecklist(lines);
+    expect(totalStores).toBe(2);
+    expect(loadGroups.map((g) => g.customerDisplay)).toEqual([
+      "A系列 中央店",
+      "B系列 中央店",
+    ]);
+    expect(loadGroups.map((g) => g.totalBoxes)).toEqual([2, 3]);
+  });
+
+  it("店舗キーが重複しない（画面の key が衝突しない）", () => {
+    const { loadGroups } = buildChecklist(lines);
+    expect(new Set(loadGroups.map((g) => g.customerKey)).size).toBe(2);
+  });
+
+  it("品目合計の店舗名も2件に分かれる", () => {
+    const { itemTotals } = buildChecklist(lines);
+    expect(itemTotals[0].storeNames).toEqual(["A系列 中央店", "B系列 中央店"]);
+    // 端数なしなので満量だけ。合算されて1店舗分に潰れていないこと
+    expect(itemTotals[0].totalBoxes).toBe(5);
+  });
+
+  it("店舗 ID が無ければ従来どおり店舗名で束ねる", () => {
+    const { totalStores } = buildChecklist([
+      line({ id: "x", customer_name: "習志野台", boxes: 1 }),
+      line({ id: "y", customer_name: "習志野台", boxes: 1, product_name: "なす" }),
+    ]);
+    expect(totalStores).toBe(1);
   });
 });
 
