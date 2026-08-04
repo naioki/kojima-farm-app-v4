@@ -168,7 +168,40 @@ describe("品目ごとの合計（積み込みの検算）", () => {
     expect(itemTotals[0].label).toBe("トマト M");
     expect(itemTotals[0].fullBoxes).toBe(5);
     expect(itemTotals[0].totalQty).toBe(50);
-    expect(itemTotals[0].storeCount).toBe(2);
+    expect(itemTotals[0].storeNames).toEqual(["習志野台", "青葉台"]);
+  });
+
+  it("店舗名を配送順に並べる（店舗の追加順ではない）", () => {
+    // 青葉台を先に登録しても、配送順（習志野台が先）で並ぶこと
+    const { itemTotals } = buildChecklist([
+      line({ id: "a", customer_name: "青葉台", sort_order: 2, product_name: "トマト", spec: "M", boxes: 1 }),
+      line({ id: "b", customer_name: "習志野台", sort_order: 1, product_name: "トマト", spec: "M", boxes: 1 }),
+    ]);
+    expect(itemTotals[0].storeNames).toEqual(["習志野台", "青葉台"]);
+  });
+
+  it("系列付きの表示名（帳票と同じもの）を使う", () => {
+    const { itemTotals } = buildChecklist([
+      line({
+        id: "a",
+        customer_name: "東道野辺",
+        customer_display: "ヨーク 東道野辺",
+        product_name: "トマト",
+        spec: "M",
+        boxes: 1,
+      }),
+    ]);
+    expect(itemTotals[0].storeNames).toEqual(["ヨーク 東道野辺"]);
+  });
+
+  it("同じ店舗の複数明細（別品目）でも店舗名は重複しない", () => {
+    const { itemTotals } = buildChecklist([
+      line({ id: "a", customer_name: "習志野台", product_name: "トマト", spec: "M", boxes: 1 }),
+      line({ id: "b", customer_name: "習志野台", product_name: "胡瓜", spec: "M", boxes: 1 }),
+    ]);
+    // トマトは習志野台1店舗のみ向け
+    const tomato = itemTotals.find((t) => t.productName === "トマト")!;
+    expect(tomato.storeNames).toEqual(["習志野台"]);
   });
 
   it("規格が違えば別扱いにする", () => {
@@ -371,6 +404,19 @@ describe("本番データでの通し検証（2026-08-04 の受注・先頭3店�
     expect(shishito.fullBoxes).toBe(0);
     expect(shishito.fractionBoxes).toBe(2);
     expect(formatItemTotalBoxes(shishito)).toBe("端数2箱");
+  });
+
+  it("積み込み画面でどの店舗向けかが配送順・系列付きで分かる", () => {
+    const { itemTotals } = buildChecklist(real);
+    const negi = itemTotals.find((t) => t.label === "長ネギ 2本")!;
+    expect(negi.storeNames).toEqual(["ヨーク 習志野台", "ヨーク 咲が丘"]);
+
+    const kyuri = itemTotals.find((t) => t.label === "胡瓜 3本")!;
+    expect(kyuri.storeNames).toEqual(["ヨーク 習志野台", "ヨーク 咲が丘"]);
+
+    // 青葉台だけの品目は1店舗のみ
+    const tomato = itemTotals.find((t) => t.label === "トマトバラ 10k")!;
+    expect(tomato.storeNames).toEqual(["ヨーク 青葉台"]);
   });
 
   it("店舗ごとの合計と品目ごとの合計が一致する（39箱）", () => {

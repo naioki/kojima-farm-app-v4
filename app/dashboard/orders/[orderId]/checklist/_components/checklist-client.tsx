@@ -314,7 +314,7 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
                     key={key}
                     checked={checkedState.load.has(key)}
                     title={row.label}
-                    detail={`${formatItemTotalBoxes(row)} ・ ${row.storeCount}店舗ぶん`}
+                    detail={`${formatItemTotalBoxes(row)} ・ ${row.storeNames.join("、")}`}
                     onToggle={() => toggle(key, !checkedState.load.has(key))}
                   />
                 );

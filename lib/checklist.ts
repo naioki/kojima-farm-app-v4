@@ -135,8 +135,11 @@ export type ItemTotal = {
   fractionBoxes: number;
   totalBoxes: number;
   totalQty: number;
-  /** この品目を降ろす店舗数 */
-  storeCount: number;
+  /**
+   * この品目を降ろす店舗の表示名（帳票と同じ系列＋店舗名）。配送順に並ぶ。
+   * 積み込み時に「どの店舗向けか」が分かるようにするためのもの。
+   */
+  storeNames: string[];
 };
 
 export type Checklist = {
@@ -245,19 +248,25 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
       fullBoxes: number;
       fractionBoxes: number;
       totalQty: number;
-      stores: Set<string>;
+      // customer_name をキーに、表示名と配送順を持つ。
+      // 同じ店舗が複数明細（品目違い）で出てきても1件にまとめるため Map にする。
+      stores: Map<string, { display: string; sortOrder: number }>;
     }
   >();
 
   for (const line of lines) {
-    const key = `${line.product_name} ${line.spec}`;
+    const key = `${line.product_name} ${line.spec}`;
     const breakdown = boxBreakdown(line);
+    const storeEntry = {
+      display: line.customer_display || line.customer_name,
+      sortOrder: sortOrderOf(line),
+    };
     const entry = byItem.get(key);
     if (entry) {
       entry.fullBoxes += breakdown.fullBoxes;
       entry.fractionBoxes += breakdown.fractionBoxes;
       entry.totalQty += lineQuantity(line);
-      entry.stores.add(line.customer_name);
+      entry.stores.set(line.customer_name, storeEntry);
     } else {
       byItem.set(key, {
         productName: line.product_name,
@@ -265,7 +274,7 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
         fullBoxes: breakdown.fullBoxes,
         fractionBoxes: breakdown.fractionBoxes,
         totalQty: lineQuantity(line),
-        stores: new Set([line.customer_name]),
+        stores: new Map([[line.customer_name, storeEntry]]),
       });
     }
   }
@@ -279,7 +288,14 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
       fractionBoxes: entry.fractionBoxes,
       totalBoxes: entry.fullBoxes + entry.fractionBoxes,
       totalQty: entry.totalQty,
-      storeCount: entry.stores.size,
+      // 積み込み時にどの店舗向けかが分かるよう、配送順（降ろす順）に並べる。
+      // 店舗一覧や通し番号と見比べやすくするため、積む順（逆順）にはしない。
+      storeNames: Array.from(entry.stores.values())
+        .sort((a, b) => {
+          if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+          return a.display.localeCompare(b.display, "ja");
+        })
+        .map((s) => s.display),
     }))
     .sort((a, b) => a.label.localeCompare(b.label, "ja"));
 }
