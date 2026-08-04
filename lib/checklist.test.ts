@@ -6,7 +6,6 @@ import {
   formatItemTotalBoxes,
   formatLineBoxes,
   lineQuantity,
-  loadRowKey,
   type ChecklistLine,
 } from "./checklist";
 
@@ -55,50 +54,46 @@ describe("boxBreakdown", () => {
   });
 });
 
-describe("降ろすとき（店舗ごと・配送順）", () => {
+describe("積むとき（店舗ごと・配送順どおり）", () => {
+  // 実際の運用: 習志野台（sort_order=1）から積み、トラックの奥に入る。
   const lines = [
     line({ id: "l1", customer_name: "八柱", sort_order: 3, boxes: 1, remainder: 0, total_qty: 10 }),
     line({ id: "l2", customer_name: "習志野台", sort_order: 1, boxes: 2, remainder: 3, total_qty: 23 }),
     line({ id: "l3", customer_name: "青葉台", sort_order: 2, boxes: 1, remainder: 0, total_qty: 10 }),
   ];
 
-  it("配送順に並ぶ", () => {
-    const { unloadGroups } = buildChecklist(lines);
-    expect(unloadGroups.map((g) => g.customerName)).toEqual([
+  it("配送順どおりに並ぶ（習志野台が最初）", () => {
+    const { loadGroups } = buildChecklist(lines);
+    expect(loadGroups.map((g) => g.customerName)).toEqual([
       "習志野台",
       "青葉台",
       "八柱",
     ]);
   });
 
-  it("何軒目かの通し番号が付く", () => {
-    const { unloadGroups } = buildChecklist(lines);
-    expect(unloadGroups.map((g) => g.stopNumber)).toEqual([1, 2, 3]);
-  });
-
   it("店舗ごとの箱数を出す（端数箱を含む）", () => {
-    const { unloadGroups } = buildChecklist(lines);
+    const { loadGroups } = buildChecklist(lines);
     // 習志野台: 満量2箱 + 端数1箱 = 3箱
-    expect(unloadGroups[0].totalBoxes).toBe(3);
-    expect(unloadGroups[1].totalBoxes).toBe(1);
+    expect(loadGroups[0].totalBoxes).toBe(3);
+    expect(loadGroups[1].totalBoxes).toBe(1);
   });
 
   it("同じ店舗の複数明細を1つにまとめる", () => {
-    const { unloadGroups } = buildChecklist([
+    const { loadGroups } = buildChecklist([
       line({ id: "a", customer_name: "習志野台", product_name: "トマト", boxes: 1, total_qty: 10 }),
       line({ id: "b", customer_name: "習志野台", product_name: "胡瓜", boxes: 2, total_qty: 20 }),
     ]);
-    expect(unloadGroups).toHaveLength(1);
-    expect(unloadGroups[0].items).toHaveLength(2);
-    expect(unloadGroups[0].totalBoxes).toBe(3);
+    expect(loadGroups).toHaveLength(1);
+    expect(loadGroups[0].items).toHaveLength(2);
+    expect(loadGroups[0].totalBoxes).toBe(3);
   });
 
   it("マスタ未登録（配送順なし）の店舗は末尾へ", () => {
-    const { unloadGroups } = buildChecklist([
+    const { loadGroups } = buildChecklist([
       line({ id: "a", customer_name: "未登録店", sort_order: null, boxes: 1 }),
       line({ id: "b", customer_name: "習志野台", sort_order: 1, boxes: 1 }),
     ]);
-    expect(unloadGroups.map((g) => g.customerName)).toEqual(["習志野台", "未登録店"]);
+    expect(loadGroups.map((g) => g.customerName)).toEqual(["習志野台", "未登録店"]);
   });
 
   it("配送順が同じなら店舗名で安定させる（毎回同じ並びになる）", () => {
@@ -110,12 +105,12 @@ describe("降ろすとき（店舗ごと・配送順）", () => {
       line({ id: "b", customer_name: "A店", sort_order: 5, boxes: 1 }),
       line({ id: "a", customer_name: "B店", sort_order: 5, boxes: 1 }),
     ]);
-    expect(a.unloadGroups.map((g) => g.customerName)).toEqual(["A店", "B店"]);
-    expect(b.unloadGroups.map((g) => g.customerName)).toEqual(["A店", "B店"]);
+    expect(a.loadGroups.map((g) => g.customerName)).toEqual(["A店", "B店"]);
+    expect(b.loadGroups.map((g) => g.customerName)).toEqual(["A店", "B店"]);
   });
 
   it("系列付きの供給先表示を使う（帳票と揃える）", () => {
-    const { unloadGroups } = buildChecklist([
+    const { loadGroups } = buildChecklist([
       line({
         id: "a",
         customer_name: "東道野辺",
@@ -123,30 +118,40 @@ describe("降ろすとき（店舗ごと・配送順）", () => {
         boxes: 1,
       }),
     ]);
-    expect(unloadGroups[0].customerDisplay).toBe("ヨーク 東道野辺");
+    expect(loadGroups[0].customerDisplay).toBe("ヨーク 東道野辺");
   });
 });
 
-describe("積むとき（配送順の逆）", () => {
+describe("降ろすとき（積んだ順の逆）", () => {
   const lines = [
     line({ id: "l1", customer_name: "八柱", sort_order: 3, boxes: 1 }),
     line({ id: "l2", customer_name: "習志野台", sort_order: 1, boxes: 1 }),
     line({ id: "l3", customer_name: "青葉台", sort_order: 2, boxes: 1 }),
   ];
 
-  it("最初に降ろす店が最後に積まれる", () => {
-    // 奥に積むと1軒目で掘り返すことになるため、積む順は配送順の逆にする
-    const { loadGroups } = buildChecklist(lines);
-    expect(loadGroups.map((g) => g.customerName)).toEqual([
+  it("最初に積んだ店（習志野台）が最後に降ろされる", () => {
+    // 習志野台から積んでトラックの奥に入るので、降ろすのは最後になる
+    const { unloadGroups } = buildChecklist(lines);
+    expect(unloadGroups.map((g) => g.customerName)).toEqual([
       "八柱",
       "青葉台",
       "習志野台",
     ]);
   });
 
-  it("通し番号は降ろす順のまま（現場で「3軒目の分」と会話できる）", () => {
+  it("何軒目かの通し番号は降ろす順に振る（八柱が1軒目）", () => {
+    const { unloadGroups } = buildChecklist(lines);
+    expect(unloadGroups.map((g) => g.stopNumber)).toEqual([1, 2, 3]);
+  });
+
+  it("積む順の通し番号は、同じ店舗の降ろす順番号を引き継ぐ", () => {
+    // 習志野台は積む1番目だが、降ろすのは最後（3軒目）なので stopNumber=3
     const { loadGroups } = buildChecklist(lines);
-    expect(loadGroups.map((g) => g.stopNumber)).toEqual([3, 2, 1]);
+    expect(loadGroups.map((g) => ({ name: g.customerName, stop: g.stopNumber }))).toEqual([
+      { name: "習志野台", stop: 3 },
+      { name: "青葉台", stop: 2 },
+      { name: "八柱", stop: 1 },
+    ]);
   });
 
   it("降ろす順と積む順は同じ集合（取り違えて中身が減らない）", () => {
@@ -302,35 +307,14 @@ describe("箱数の表示", () => {
   });
 
   it("実データから作った合計と表示が食い違わない", () => {
-    const { itemTotals, unloadGroups } = buildChecklist([
+    const { itemTotals, loadGroups } = buildChecklist([
       line({ id: "a", customer_name: "習志野台", sort_order: 1, boxes: 2, remainder: 4, total_qty: 24 }),
       line({ id: "b", customer_name: "青葉台", sort_order: 2, boxes: 0, remainder: 6, total_qty: 6 }),
     ]);
     // 満量2箱 + 端数2箱（店舗ごとに1箱）= 4箱
     expect(formatItemTotalBoxes(itemTotals[0])).toBe("4箱（うち端数2箱）");
-    expect(formatLineBoxes(unloadGroups[1].items[0].breakdown)).toBe("端数1箱（6）");
-  });
-});
-
-describe("loadRowKey", () => {
-  it("品目と規格の組で一意になる", () => {
-    expect(loadRowKey("トマト", "M")).toBe("トマト|M");
-    expect(loadRowKey("トマト", "L")).not.toBe(loadRowKey("トマト", "M"));
-  });
-
-  it("規格なしでも衝突しない", () => {
-    expect(loadRowKey("トマト", "")).toBe("トマト|");
-    expect(loadRowKey("トマト", "")).not.toBe(loadRowKey("トマト", "M"));
-  });
-
-  it("itemTotals の各行と1対1で対応する（キーが重複しない）", () => {
-    const { itemTotals } = buildChecklist([
-      line({ id: "a", product_name: "トマト", spec: "M", boxes: 1 }),
-      line({ id: "b", product_name: "トマト", spec: "L", boxes: 1 }),
-      line({ id: "c", product_name: "胡瓜", spec: "", boxes: 1 }),
-    ]);
-    const keys = itemTotals.map((t) => loadRowKey(t.productName, t.spec));
-    expect(new Set(keys).size).toBe(itemTotals.length);
+    // loadGroups は配送順どおり（習志野台が最初）なので [1] が青葉台
+    expect(formatLineBoxes(loadGroups[1].items[0].breakdown)).toBe("端数1箱（6）");
   });
 });
 
@@ -369,23 +353,32 @@ describe("本番データでの通し検証（2026-08-04 の受注・先頭3店�
     { id: "9", customer_name: "青葉台", customer_display: "ヨーク 青葉台", sort_order: 3, product_name: "長ねぎバラ", spec: "バラ", unit: 50, boxes: 6, remainder: 0 },
   ];
 
-  it("配送順どおりに店舗が並び、系列付きで表示される", () => {
-    const { unloadGroups } = buildChecklist(real);
-    expect(unloadGroups.map((g) => g.customerDisplay)).toEqual([
+  it("積む順は配送順どおりに並び、系列付きで表示される（習志野台から積む）", () => {
+    const { loadGroups } = buildChecklist(real);
+    expect(loadGroups.map((g) => g.customerDisplay)).toEqual([
       "ヨーク 習志野台",
       "ヨーク 咲が丘",
       "ヨーク 青葉台",
     ]);
   });
 
-  it("店舗ごとの箱数が実データと一致する", () => {
+  it("降ろす順は積む順の逆（習志野台を最後に降ろす）", () => {
     const { unloadGroups } = buildChecklist(real);
-    expect(unloadGroups.map((g) => g.totalBoxes)).toEqual([7, 5, 27]);
+    expect(unloadGroups.map((g) => g.customerDisplay)).toEqual([
+      "ヨーク 青葉台",
+      "ヨーク 咲が丘",
+      "ヨーク 習志野台",
+    ]);
+  });
+
+  it("店舗ごとの箱数が実データと一致する", () => {
+    const { loadGroups } = buildChecklist(real);
+    expect(loadGroups.map((g) => g.totalBoxes)).toEqual([7, 5, 27]);
   });
 
   it("数量が入数から正しく出る（total_qty が0でも0にならない）", () => {
-    const { unloadGroups } = buildChecklist(real);
-    const aoba = unloadGroups[2];
+    const { loadGroups } = buildChecklist(real);
+    const aoba = loadGroups[2];
     const kyuri = aoba.items.find((i) => i.label === "胡瓜バラ 100本");
     expect(kyuri?.totalQty).toBe(1250);
     expect(formatLineBoxes(kyuri!.breakdown)).toBe("13箱（うち端数1箱・50）");

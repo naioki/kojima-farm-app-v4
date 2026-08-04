@@ -1,6 +1,12 @@
 /**
  * 積み込み・荷降ろしチェックリストの計算ロジック（純関数）。
  *
+ * ## 積む順と降ろす順
+ *
+ * 実際の運用: 配送順（customers.sort_order）どおりに習志野台から積み、
+ * トラックの奥に入る。降ろすときはその逆順（積んだ順の逆）になるので、
+ * 習志野台は最後に降ろす。詳細は buildChecklist を参照。
+ *
  * ## 数える単位は「箱」
  *
  * 現場で数えるのは数量ではなく**箱（コンテナ）**。既存のラベル生成
@@ -115,17 +121,7 @@ export type StoreChecklistGroup = {
   totalBoxes: number;
 };
 
-/**
- * 積み込みチェックの行キー。品目・規格ごとに1つ。
- *
- * ItemTotal と1対1で対応する。`"use server"` のファイルは async 関数以外を
- * エクスポートできないため、Server Action 側ではなくここに置いている。
- */
-export function loadRowKey(productName: string, spec: string): string {
-  return `${productName}|${spec}`;
-}
-
-/** 積むとき用: 品目・規格ごとの合計（検算用）。 */
+/** 積むとき用: 品目・規格ごとの合計（検算用・チェック対象ではない参考情報）。 */
 export type ItemTotal = {
   productName: string;
   spec: string;
@@ -143,9 +139,9 @@ export type ItemTotal = {
 };
 
 export type Checklist = {
-  /** 降ろす順（配送順）。荷降ろし用。 */
+  /** 降ろす順（積む順の逆）。荷降ろし用。 */
   unloadGroups: StoreChecklistGroup[];
-  /** 積む順（配送順の逆）。最初に降ろす店を最後に積むため。 */
+  /** 積む順（配送順どおり）。積み込み用。 */
   loadGroups: StoreChecklistGroup[];
   /** 品目・規格ごとの合計。積み込みの検算用。 */
   itemTotals: ItemTotal[];
@@ -190,9 +186,15 @@ function sortOrderOf(line: ChecklistLine): number {
 
 /**
  * 店舗ごとにまとめる。
- * 並びは配送順 → 同順位なら店舗名（五十音）で安定させる。
+ *
+ * 並びは配送順（sort_order 昇順）＝**積む順**。習志野台（sort_order=1）が
+ * 最初に積まれてトラックの奥に入り、最後に積んだ店舗が手前になる。
+ * stopNumber（何軒目か）はここでは振らない（積む順と降ろす順の両方で
+ * 意味が変わるため、呼び出し側の buildChecklist で振る）。
+ *
+ * 同順位なら店舗名（五十音）で安定させる。
  */
-function buildStoreGroups(lines: ChecklistLine[]): StoreChecklistGroup[] {
+function buildStoreGroups(lines: ChecklistLine[]): Omit<StoreChecklistGroup, "stopNumber">[] {
   const byStore = new Map<string, ChecklistLine[]>();
   for (const line of lines) {
     const key = line.customer_name;
@@ -219,7 +221,6 @@ function buildStoreGroups(lines: ChecklistLine[]): StoreChecklistGroup[] {
       customerName,
       customerDisplay: storeLines[0].customer_display || customerName,
       sortOrder,
-      stopNumber: 0, // 並べ替えた後で採番する
       items,
       totalBoxes: items.reduce((sum, item) => sum + item.breakdown.totalBoxes, 0),
     };
@@ -230,9 +231,7 @@ function buildStoreGroups(lines: ChecklistLine[]): StoreChecklistGroup[] {
     return a.customerName.localeCompare(b.customerName, "ja");
   });
 
-  // 配送順の通し番号は「降ろす順」で振る。積み込みで逆順にしても番号は変わらない
-  // （「3軒目の分」と現場で会話できるようにするため）。
-  return groups.map((group, index) => ({ ...group, stopNumber: index + 1 }));
+  return groups;
 }
 
 /**
@@ -303,16 +302,39 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
 /**
  * チェックリストを組み立てる。
  *
- * - `unloadGroups`: 配送順。降ろすときに使う。
- * - `loadGroups`: 配送順の逆。**最初に降ろす店を最後に積む**ため
- *   （奥に積むと1軒目で掘り返すことになる）。通し番号は降ろす順のまま。
- * - `itemTotals`: 品目・規格ごとの合計。積み込みの数え漏れ検算用。
+ * 実際の積み下ろしの運用に合わせている:
+ *
+ *   積む順 = 配送順どおり（習志野台から積む） → トラックの奥から手前へ
+ *   降ろす順 = 積んだ順の逆（習志野台は最後に降ろす）
+ *
+ * - `loadGroups`: 配送順（sort_order 昇順）。積むときに使う。
+ * - `unloadGroups`: loadGroups の逆順。降ろすときに使う。
+ * - stopNumber（「3軒目」のように現場で会話するための通し番号）は
+ *   **降ろす順**を基準に振る。トラックが実際に回る順（＝降ろす順）に
+ *   対して数えるのが自然なため。積む順（loadGroups）側は、同じ店舗の
+ *   stopNumber をそのまま引き継ぐ（習志野台は積む1番目だが、降ろすのは
+ *   最後＝最大の stopNumber になる）。
+ * - `itemTotals`: 品目・規格ごとの合計。積み込みの数え漏れ検算用の参考情報。
  */
 export function buildChecklist(lines: ChecklistLine[]): Checklist {
-  const unloadGroups = buildStoreGroups(lines);
+  const byLoadOrder = buildStoreGroups(lines);
+  const byUnloadOrder = [...byLoadOrder].reverse();
+
+  const unloadGroups: StoreChecklistGroup[] = byUnloadOrder.map((group, index) => ({
+    ...group,
+    stopNumber: index + 1,
+  }));
+  const stopNumberByStore = new Map(
+    unloadGroups.map((group) => [group.customerName, group.stopNumber]),
+  );
+  const loadGroups: StoreChecklistGroup[] = byLoadOrder.map((group) => ({
+    ...group,
+    stopNumber: stopNumberByStore.get(group.customerName)!,
+  }));
+
   return {
     unloadGroups,
-    loadGroups: [...unloadGroups].reverse(),
+    loadGroups,
     itemTotals: buildItemTotals(lines),
     totalBoxes: unloadGroups.reduce((sum, group) => sum + group.totalBoxes, 0),
     totalStores: unloadGroups.length,

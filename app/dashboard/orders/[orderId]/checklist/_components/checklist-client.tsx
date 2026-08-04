@@ -6,11 +6,13 @@
  * 紙の帳票は現行のまま使うので、こちらは画面でしかできないこと
  * ——「今どこまで進んだか」を共有する——に振っている。
  *
- * 荷降ろしは**今の店舗を1軒だけ大きく出す**。40店舗を一度に並べても
- * トラックの中では読めないため。全体の進捗と各店舗の箱数は上下に添える。
+ * 積み込み・荷降ろしは同じ「今の店舗を1軒だけ大きく出す」形式に統一している。
+ * 40店舗を一度に並べても現場では読めないため。全体の進捗（対象・完了・残り）
+ * を大きく見せ、各店舗の箱数は一覧に添える。
  *
- * 積み込みは品目ごとの合計を主軸にする。冷蔵庫から品目単位で出すので、
- * 店舗ごとに並べても数えにくい。積む順（逆配送順）は下に参考として出す。
+ * 積む順と降ろす順は逆（実際の運用に合わせている。lib/checklist.ts 参照）:
+ *   積み込み: 配送順どおり（習志野台から積む） → checklist.loadGroups
+ *   荷降ろし: 積んだ順の逆（習志野台を最後に降ろす） → checklist.unloadGroups
  */
 
 import { useMemo, useOptimistic, useState, useTransition } from "react";
@@ -37,21 +39,51 @@ import {
   type ChecklistMode,
   type OrderChecklist,
 } from "@/app/actions/checklist-actions";
-import {
-  formatItemTotalBoxes,
-  formatLineBoxes,
-  loadRowKey,
-  type StoreChecklistGroup,
-} from "@/lib/checklist";
+import { formatLineBoxes, type StoreChecklistGroup } from "@/lib/checklist";
 import { cn } from "@/lib/utils";
 
 type CheckedState = Record<ChecklistMode, Set<string>>;
+
+/** 対象・完了・残りを大きな数字で見せる。「残りが見づらい」というフィードバックへの対応。 */
+function StoreStats({ total, done }: { total: number; done: number }) {
+  const remaining = total - done;
+  return (
+    <div className="grid grid-cols-3 gap-2 px-4 py-3">
+      <div className="rounded-lg bg-muted/60 px-2 py-2 text-center">
+        <p className="text-2xl font-bold tabular-nums leading-none">{total}</p>
+        <p className="mt-1 text-[11px] text-muted-foreground">対象店舗</p>
+      </div>
+      <div className="rounded-lg bg-green-50 px-2 py-2 text-center">
+        <p className="text-2xl font-bold tabular-nums leading-none text-green-700">
+          {done}
+        </p>
+        <p className="mt-1 text-[11px] text-muted-foreground">完了</p>
+      </div>
+      <div
+        className={cn(
+          "rounded-lg px-2 py-2 text-center",
+          remaining > 0 ? "bg-amber-50" : "bg-green-50",
+        )}
+      >
+        <p
+          className={cn(
+            "text-2xl font-bold tabular-nums leading-none",
+            remaining > 0 ? "text-amber-700" : "text-green-700",
+          )}
+        >
+          {remaining}
+        </p>
+        <p className="mt-1 text-[11px] text-muted-foreground">残り店舗</p>
+      </div>
+    </div>
+  );
+}
 
 function ProgressBar({ done, total }: { done: number; total: number }) {
   const ratio = total > 0 ? Math.min(100, (done / total) * 100) : 0;
   return (
     <div
-      className="h-2 w-full overflow-hidden rounded-full bg-muted"
+      className="mx-4 h-2 overflow-hidden rounded-full bg-muted"
       role="progressbar"
       aria-valuenow={done}
       aria-valuemin={0}
@@ -125,7 +157,12 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
   const [mode, setMode] = useState<ChecklistMode>("load");
   const [isPending, startTransition] = useTransition();
   const [resetOpen, setResetOpen] = useState(false);
-  const [storeIndexOverride, setStoreIndexOverride] = useState<number | null>(null);
+  // モードごとに個別に「今の店舗」の手動選択を持つ（積み込み中に選んだ位置が
+  // 荷降ろしタブに漏れ出さないようにするため）。
+  const [indexOverride, setIndexOverride] = useState<Record<ChecklistMode, number | null>>({
+    load: null,
+    unload: null,
+  });
 
   const [checkedState, applyOptimistic] = useOptimistic<
     CheckedState,
@@ -164,7 +201,7 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
       const result = await clearChecklist(orderId, mode);
       setResetOpen(false);
       if (result.success) {
-        setStoreIndexOverride(null);
+        setIndexOverride((prev) => ({ ...prev, [mode]: null }));
         toast.success(
           mode === "load" ? "積み込みのチェックを外しました" : "荷降ろしのチェックを外しました",
         );
@@ -174,31 +211,21 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
     });
   }
 
-  // ── 積み込み: 品目ごとの合計 ──────────────────────────────────────────
-  const loadRows = checklist.itemTotals;
-  const loadDone = loadRows.filter((row) =>
-    checkedState.load.has(loadRowKey(row.productName, row.spec)),
-  ).length;
-  const loadRemainingBoxes = loadRows
-    .filter((row) => !checkedState.load.has(loadRowKey(row.productName, row.spec)))
-    .reduce((sum, row) => sum + row.totalBoxes, 0);
-
-  // ── 荷降ろし: 店舗ごと ───────────────────────────────────────────────
-  const unloadGroups = checklist.unloadGroups;
+  // 積み込み・荷降ろしを完全に対称に扱う。使うグループが違うだけ。
+  const groups = mode === "load" ? checklist.loadGroups : checklist.unloadGroups;
+  const checked = checkedState[mode];
 
   const storeStatus = useMemo(
     () =>
-      unloadGroups.map((group) => {
-        const doneItems = group.items.filter((item) =>
-          checkedState.unload.has(item.lineId),
-        ).length;
+      groups.map((group) => {
+        const doneItems = group.items.filter((item) => checked.has(item.lineId)).length;
         return {
           group,
           doneItems,
           complete: group.items.length > 0 && doneItems === group.items.length,
         };
       }),
-    [unloadGroups, checkedState.unload],
+    [groups, checked],
   );
 
   const doneStores = storeStatus.filter((s) => s.complete).length;
@@ -209,21 +236,21 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
   // 「今の店舗」は未完了の先頭。手で選んだらそちらを優先する。
   const autoIndex = storeStatus.findIndex((s) => !s.complete);
   const currentIndex =
-    storeIndexOverride ?? (autoIndex >= 0 ? autoIndex : unloadGroups.length - 1);
-  const current: StoreChecklistGroup | undefined = unloadGroups[currentIndex];
+    indexOverride[mode] ?? (autoIndex >= 0 ? autoIndex : groups.length - 1);
+  const current: StoreChecklistGroup | undefined = groups[currentIndex];
   const currentStatus = storeStatus[currentIndex];
 
   function goToNextStore() {
     const nextIncomplete = storeStatus.findIndex(
       (s, i) => i > currentIndex && !s.complete,
     );
-    setStoreIndexOverride(nextIncomplete >= 0 ? nextIncomplete : null);
+    setIndexOverride((prev) => ({
+      ...prev,
+      [mode]: nextIncomplete >= 0 ? nextIncomplete : null,
+    }));
   }
 
-  const allDone =
-    mode === "load"
-      ? loadRows.length > 0 && loadDone === loadRows.length
-      : unloadGroups.length > 0 && doneStores === unloadGroups.length;
+  const allDone = groups.length > 0 && doneStores === groups.length;
 
   return (
     <div className="mx-auto max-w-2xl pb-24">
@@ -273,190 +300,121 @@ export function ChecklistClient({ initial }: { initial: OrderChecklist }) {
         </div>
       </div>
 
-      {/* 進捗 */}
-      <div className="space-y-2 border-b px-4 py-3">
-        <div className="flex items-baseline justify-between gap-2">
-          <p className="text-sm font-medium">
-            {mode === "load"
-              ? `${loadDone} / ${loadRows.length} 品目`
-              : `${doneStores} / ${unloadGroups.length} 軒`}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            残り {mode === "load" ? loadRemainingBoxes : remainingBoxes} 箱
-          </p>
+      {/* 進捗: 対象・完了・残りを大きく見せる */}
+      <div className="space-y-2 border-b pb-3">
+        <StoreStats total={groups.length} done={doneStores} />
+        <div className="flex items-center justify-between px-4 text-xs text-muted-foreground">
+          <span>残り {remainingBoxes} 箱</span>
+          {allDone && (
+            <span className="flex items-center gap-1 font-semibold text-green-700">
+              <Check className="h-3.5 w-3.5" strokeWidth={3} />
+              {mode === "load" ? "積み込み完了" : "荷降ろし完了"}
+            </span>
+          )}
         </div>
-        <ProgressBar
-          done={mode === "load" ? loadDone : doneStores}
-          total={mode === "load" ? loadRows.length : unloadGroups.length}
-        />
-        {allDone && (
-          <p className="flex items-center gap-1.5 text-sm font-semibold text-green-700">
-            <Check className="h-4 w-4" strokeWidth={3} />
-            {mode === "load" ? "積み込み完了" : "全店舗の荷降ろし完了"}
-          </p>
-        )}
+        <ProgressBar done={doneStores} total={groups.length} />
       </div>
 
-      {/* ── 積み込み ─────────────────────────────────────────────────── */}
-      {mode === "load" && (
-        <>
-          <div className="border-b">
-            <p className="px-4 pt-3 pb-1 text-xs font-semibold text-muted-foreground">
-              品目ごとの合計（数え漏れの確認）
+      {/* 今の店舗を1軒だけ大きく表示。積み込み・荷降ろし共通のレイアウト。 */}
+      {current && currentStatus ? (
+        <div className="border-b bg-primary/5">
+          <div className="px-4 pt-3">
+            <p className="text-xs font-semibold text-primary">
+              {mode === "load" ? "積む順" : "降ろす順"}
+              {currentIndex + 1} / {groups.length} 軒目
             </p>
-            {loadRows.length === 0 ? (
-              <p className="px-4 py-6 text-sm text-muted-foreground">明細がありません</p>
-            ) : (
-              loadRows.map((row) => {
-                const key = loadRowKey(row.productName, row.spec);
-                return (
-                  <CheckRow
-                    key={key}
-                    checked={checkedState.load.has(key)}
-                    title={row.label}
-                    detail={`${formatItemTotalBoxes(row)} ・ ${row.storeNames.join("、")}`}
-                    onToggle={() => toggle(key, !checkedState.load.has(key))}
-                  />
-                );
-              })
-            )}
+            <h2 className="mt-0.5 text-xl font-bold leading-tight">
+              {current.customerDisplay}
+            </h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              この店で {current.totalBoxes} 箱
+              {currentStatus.complete && " ・ 完了"}
+            </p>
           </div>
-
-          {/* 積む順の参考。最初に降ろす店を最後に積む */}
-          {checklist.loadGroups.length > 0 && (
-            <div className="px-4 py-3">
-              <p className="text-xs font-semibold text-muted-foreground">
-                積む順（配送順の逆）
-              </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                最初に降ろす店を最後に積むと、1軒目で掘り返さずに済みます
-              </p>
-              <ol className="mt-2 space-y-1">
-                {checklist.loadGroups.map((group) => (
-                  <li
-                    key={group.customerName}
-                    className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs"
-                  >
-                    <span className="min-w-0 truncate">
-                      <span className="mr-1.5 font-mono text-muted-foreground">
-                        {group.stopNumber}
-                      </span>
-                      {group.customerDisplay}
-                    </span>
-                    <span className="shrink-0 font-mono text-muted-foreground">
-                      {group.totalBoxes}箱
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-        </>
+          <div className="mt-3 border-t bg-background">
+            {current.items.map((item) => (
+              <CheckRow
+                key={item.lineId}
+                checked={checked.has(item.lineId)}
+                title={item.label}
+                detail={`${formatLineBoxes(item.breakdown)} ・ 計 ${item.totalQty}`}
+                onToggle={() => toggle(item.lineId, !checked.has(item.lineId))}
+              />
+            ))}
+          </div>
+          <div className="px-4 py-3">
+            <Button
+              type="button"
+              className="min-h-[48px] w-full gap-1.5 text-base"
+              variant={currentStatus.complete ? "default" : "outline"}
+              onClick={goToNextStore}
+              disabled={allDone}
+            >
+              次の店舗へ
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <p className="px-4 py-6 text-sm text-muted-foreground">明細がありません</p>
       )}
 
-      {/* ── 荷降ろし ─────────────────────────────────────────────────── */}
-      {mode === "unload" && (
-        <>
-          {current && currentStatus ? (
-            <div className="border-b bg-primary/5">
-              <div className="px-4 pt-3">
-                <p className="text-xs font-semibold text-primary">
-                  {current.stopNumber} 軒目 / {unloadGroups.length} 軒
-                </p>
-                <h2 className="mt-0.5 text-xl font-bold leading-tight">
-                  {current.customerDisplay}
-                </h2>
-                <p className="mt-0.5 text-sm text-muted-foreground">
-                  この店で {current.totalBoxes} 箱
-                  {currentStatus.complete && " ・ 完了"}
-                </p>
-              </div>
-              <div className="mt-3 border-t bg-background">
-                {current.items.map((item) => (
-                  <CheckRow
-                    key={item.lineId}
-                    checked={checkedState.unload.has(item.lineId)}
-                    title={item.label}
-                    detail={`${formatLineBoxes(item.breakdown)} ・ 計 ${item.totalQty}`}
-                    onToggle={() =>
-                      toggle(item.lineId, !checkedState.unload.has(item.lineId))
-                    }
-                  />
-                ))}
-              </div>
-              <div className="px-4 py-3">
-                <Button
+      {/* 全店舗の一覧。タップで移動できる */}
+      {groups.length > 0 && (
+        <div className="px-4 py-3">
+          <p className="text-xs font-semibold text-muted-foreground">
+            店舗一覧（{mode === "load" ? "積む順" : "降ろす順"}・タップで移動）
+          </p>
+          <ol className="mt-2 space-y-1">
+            {storeStatus.map((status, index) => (
+              <li key={status.group.customerName}>
+                <button
                   type="button"
-                  className="min-h-[48px] w-full gap-1.5 text-base"
-                  variant={currentStatus.complete ? "default" : "outline"}
-                  onClick={goToNextStore}
-                  disabled={currentIndex >= unloadGroups.length - 1 && currentStatus.complete && doneStores === unloadGroups.length}
+                  onClick={() =>
+                    setIndexOverride((prev) => ({ ...prev, [mode]: index }))
+                  }
+                  aria-current={index === currentIndex ? "true" : undefined}
+                  className={cn(
+                    "flex min-h-[44px] w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+                    index === currentIndex
+                      ? "bg-primary/10 ring-1 ring-primary/30"
+                      : "bg-muted/40 active:bg-muted",
+                  )}
                 >
-                  次の店舗へ
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <p className="px-4 py-6 text-sm text-muted-foreground">明細がありません</p>
-          )}
-
-          {/* 全店舗の一覧。タップで移動できる */}
-          {unloadGroups.length > 0 && (
-            <div className="px-4 py-3">
-              <p className="text-xs font-semibold text-muted-foreground">
-                店舗一覧（タップで移動）
-              </p>
-              <ol className="mt-2 space-y-1">
-                {storeStatus.map((status, index) => (
-                  <li key={status.group.customerName}>
-                    <button
-                      type="button"
-                      onClick={() => setStoreIndexOverride(index)}
-                      aria-current={index === currentIndex ? "true" : undefined}
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span
+                      aria-hidden
                       className={cn(
-                        "flex min-h-[44px] w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
-                        index === currentIndex
-                          ? "bg-primary/10 ring-1 ring-primary/30"
-                          : "bg-muted/40 active:bg-muted",
+                        "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-mono",
+                        status.complete
+                          ? "bg-green-600 text-white"
+                          : "bg-background text-muted-foreground ring-1 ring-input",
                       )}
                     >
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <span
-                          aria-hidden
-                          className={cn(
-                            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-mono",
-                            status.complete
-                              ? "bg-green-600 text-white"
-                              : "bg-background text-muted-foreground ring-1 ring-input",
-                          )}
-                        >
-                          {status.complete ? (
-                            <Check className="h-3 w-3" strokeWidth={3} />
-                          ) : (
-                            status.group.stopNumber
-                          )}
-                        </span>
-                        <span
-                          className={cn(
-                            "truncate",
-                            status.complete && "text-muted-foreground",
-                          )}
-                        >
-                          {status.group.customerDisplay}
-                        </span>
-                      </span>
-                      <span className="shrink-0 font-mono text-muted-foreground">
-                        {status.doneItems}/{status.group.items.length}・
-                        {status.group.totalBoxes}箱
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-        </>
+                      {status.complete ? (
+                        <Check className="h-3 w-3" strokeWidth={3} />
+                      ) : (
+                        index + 1
+                      )}
+                    </span>
+                    <span
+                      className={cn(
+                        "truncate",
+                        status.complete && "text-muted-foreground",
+                      )}
+                    >
+                      {status.group.customerDisplay}
+                    </span>
+                  </span>
+                  <span className="shrink-0 font-mono text-muted-foreground">
+                    {status.doneItems}/{status.group.items.length}・
+                    {status.group.totalBoxes}箱
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
       )}
 
       {/* やり直し */}
