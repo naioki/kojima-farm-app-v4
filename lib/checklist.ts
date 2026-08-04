@@ -3,9 +3,15 @@
  *
  * ## 積む順と降ろす順
  *
- * 実際の運用: 配送順（customers.sort_order）どおりに習志野台から積み、
- * トラックの奥に入る。降ろすときはその逆順（積んだ順の逆）になるので、
- * 習志野台は最後に降ろす。詳細は buildChecklist を参照。
+ * 荷物の出し入れは**後ろの入り口から**行う（脇のウィングは上げない）。
+ * つまりトラックは片側からしか出し入れできず、後入れ先出し（LIFO）になる。
+ *
+ * そのため、**最後に配達する店をいちばん先に積んで運転席側（前方）に置く**。
+ * customers.sort_order の昇順がこの積み込み順（＝一覧表の並び順）で、
+ * 習志野台（sort_order=1）が最初に積まれて前方に入る。
+ *
+ * 降ろすときは扉側＝最後に積んだ店から取り出すので、積んだ順の逆になる。
+ * 習志野台は最後に降ろす（＝最後に配達する）。詳細は buildChecklist を参照。
  *
  * ## 数える単位は「箱」
  *
@@ -49,7 +55,13 @@ export type ChecklistLine = {
    * unit があればそちらから計算する（lineQuantity を参照）。
    */
   total_qty?: number | null;
-  /** 配送順。小さいほど先に配達する。未設定は末尾へ。 */
+  /**
+   * 一覧表の並び順（= 積み込み順）。小さいほど**先に積む**＝前方に入る。
+   *
+   * 後ろの入り口から出し入れするため、先に積んだ店は最後に降りる。
+   * つまり小さいほど**配達は後**になる（「先に配達する」ではない）。
+   * 未設定は末尾へ。
+   */
   sort_order?: number | null;
 };
 
@@ -141,7 +153,7 @@ export type ItemTotal = {
   totalBoxes: number;
   totalQty: number;
   /**
-   * この品目を降ろす店舗の表示名（帳票と同じ系列＋店舗名）。配送順に並ぶ。
+   * この品目を積む店舗の表示名（帳票と同じ系列＋店舗名）。積み込み順に並ぶ。
    * 積み込み時に「どの店舗向けか」が分かるようにするためのもの。
    */
   storeNames: string[];
@@ -150,7 +162,7 @@ export type ItemTotal = {
 export type Checklist = {
   /** 降ろす順（積む順の逆）。荷降ろし用。 */
   unloadGroups: StoreChecklistGroup[];
-  /** 積む順（配送順どおり）。積み込み用。 */
+  /** 積む順（sort_order 昇順＝一覧表の順）。積み込み用。 */
   loadGroups: StoreChecklistGroup[];
   /** 品目・規格ごとの合計。積み込みの検算用。 */
   itemTotals: ItemTotal[];
@@ -201,8 +213,8 @@ function storeKeyOf(line: ChecklistLine): string {
 /**
  * 店舗ごとにまとめる。
  *
- * 並びは配送順（sort_order 昇順）＝**積む順**。習志野台（sort_order=1）が
- * 最初に積まれてトラックの奥に入り、最後に積んだ店舗が手前になる。
+ * 並びは sort_order 昇順＝**積む順**（一覧表の順）。習志野台（sort_order=1）が
+ * 最初に積まれて運転席側（前方）に入り、最後に積んだ店舗が扉側になる。
  *
  * まとめる基準は店舗 ID（storeKeyOf）。同順位なら店舗名（五十音）で安定させる。
  */
@@ -300,8 +312,8 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
       fractionBoxes: entry.fractionBoxes,
       totalBoxes: entry.fullBoxes + entry.fractionBoxes,
       totalQty: entry.totalQty,
-      // 積み込み時にどの店舗向けかが分かるよう、配送順（降ろす順）に並べる。
-      // 店舗一覧や通し番号と見比べやすくするため、積む順（逆順）にはしない。
+      // これは積む前の総数確認に使う表示なので、積む順（sort_order 昇順）に
+      // 並べて、積み込みタブの店舗一覧と同じ順で見比べられるようにする。
       storeNames: Array.from(entry.stores.values())
         .sort((a, b) => {
           if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
@@ -315,12 +327,16 @@ function buildItemTotals(lines: ChecklistLine[]): ItemTotal[] {
 /**
  * チェックリストを組み立てる。
  *
- * 実際の積み下ろしの運用に合わせている:
+ * 荷物の出し入れは**後ろの入り口から**（脇のウィングは上げない）。片側からしか
+ * 出し入れできないので後入れ先出し（LIFO）になり、実際の運用はこうなる:
  *
- *   積む順 = 配送順どおり（習志野台から積む） → トラックの奥から手前へ
- *   降ろす順 = 積んだ順の逆（習志野台は最後に降ろす）
+ *   積む順   = sort_order 昇順（習志野台から積む） → 運転席側（前方）から扉側へ
+ *   降ろす順 = 積んだ順の逆（扉側から取り出す。習志野台は最後に降ろす）
  *
- * - `loadGroups`: 配送順（sort_order 昇順）。積むときに使う。
+ * 言い換えると、**最後に配達する店をいちばん先に積んで前方に置く**。
+ * この向きを逆にすると、店の前で手前の荷物を全部降ろす作業が発生する。
+ *
+ * - `loadGroups`: sort_order 昇順（一覧表の順）。積むときに使う。
  * - `unloadGroups`: loadGroups の逆順。降ろすときに使う。
  * - `itemTotals`: 品目・規格ごとの合計。積む前の総数確認に使う。
  *

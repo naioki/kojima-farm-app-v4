@@ -10,9 +10,12 @@
  * 40店舗を一度に並べても現場では読めないため。全体の進捗（対象・完了・残り）
  * を大きく見せ、各店舗の箱数は一覧に添える。
  *
- * 積む順と降ろす順は逆（実際の運用に合わせている。lib/checklist.ts 参照）:
- *   積み込み: 配送順どおり（習志野台から積む） → checklist.loadGroups
- *   荷降ろし: 積んだ順の逆（習志野台を最後に降ろす） → checklist.unloadGroups
+ * 積む順と降ろす順は逆（後ろの入り口から出し入れするため。lib/checklist.ts 参照）:
+ *   積み込み: sort_order 昇順（習志野台から積んで運転席側へ） → checklist.loadGroups
+ *   荷降ろし: 積んだ順の逆（扉側から。習志野台は最後） → checklist.unloadGroups
+ *
+ * どちらのモードも店舗ごとに1軒ずつ出す。積むときも店舗単位で積むので、
+ * 店舗名が大きく出ていないと現場で使えない。
  */
 
 import { useMemo, useOptimistic, useState, useTransition } from "react";

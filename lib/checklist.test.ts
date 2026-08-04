@@ -130,13 +130,36 @@ describe("降ろすとき（積んだ順の逆）", () => {
   ];
 
   it("最初に積んだ店（習志野台）が最後に降ろされる", () => {
-    // 習志野台から積んでトラックの奥に入るので、降ろすのは最後になる
+    // 習志野台から積んで運転席側（前方）に入るので、降ろすのは最後になる
     const { unloadGroups } = buildChecklist(lines);
     expect(unloadGroups.map((g) => g.customerName)).toEqual([
       "八柱",
       "青葉台",
       "習志野台",
     ]);
+  });
+
+  it("後ろの入り口から出し入れする前提が崩れていない（LIFO）", () => {
+    // 出し入れは後ろの扉からだけ。脇のウィングは上げない。
+    // よって「先に積んだ店 = 後に降ろす店」でなければならない。
+    // この向きを逆にすると店の前で全部降ろす作業が発生するため、
+    // 実装が反転していないことをここで固定する。
+    const { loadGroups, unloadGroups } = buildChecklist(lines);
+    const n = loadGroups.length;
+    loadGroups.forEach((group, loadIndex) => {
+      const unloadIndex = unloadGroups.findIndex(
+        (g) => g.customerKey === group.customerKey,
+      );
+      // 積んだ順の位置と降ろす順の位置を足すと必ず n-1 になる（完全な逆順）
+      expect(loadIndex + unloadIndex).toBe(n - 1);
+    });
+  });
+
+  it("最後に配達する店が、いちばん先に積まれる", () => {
+    // 降ろすのが最後 = 配達が最後。その店が積み込みの1軒目に来る。
+    const { loadGroups, unloadGroups } = buildChecklist(lines);
+    const lastDelivered = unloadGroups[unloadGroups.length - 1];
+    expect(loadGroups[0].customerKey).toBe(lastDelivered.customerKey);
   });
 
   it("降ろす順と積む順は同じ集合（取り違えて中身が減らない）", () => {
