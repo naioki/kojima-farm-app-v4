@@ -450,10 +450,13 @@ async def verify_and_approve(req: VerifyRequest):
     #                           p_order_date, p_correction_notes, p_lines)
     tenant_id = _get_tenant_id_for_verification(verification_id)
 
-    # reviewed_by: Next.js から渡された user.id を優先、なければ tenant の admin を検索
-    if req.reviewed_by:
-        reviewed_by = str(req.reviewed_by)
-    else:
+    # reviewed_by: Next.js から渡された user.id を優先、なければ tenant の admin を検索。
+    # nil UUID (00000000-...-000000000000) は「未設定」とみなす。
+    # ここで解決できなくても RPC 側が tenant の admin にフォールバックするため、
+    # 承認処理自体は止めない（migrations/006 参照）。
+    NIL_UUID = "00000000-0000-0000-0000-000000000000"
+    reviewed_by = str(req.reviewed_by) if req.reviewed_by else ""
+    if not reviewed_by or reviewed_by == NIL_UUID:
         sb2 = get_supabase()
         admin_row = (
             sb2.table("profiles")
@@ -463,9 +466,7 @@ async def verify_and_approve(req: VerifyRequest):
             .limit(1)
             .execute()
         )
-        if not admin_row.data:
-            raise HTTPException(status_code=400, detail="tenant に admin ユーザーが存在しません")
-        reviewed_by = admin_row.data[0]["id"]
+        reviewed_by = admin_row.data[0]["id"] if admin_row.data else None
 
     lines_payload = [
         {

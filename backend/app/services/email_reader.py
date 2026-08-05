@@ -182,8 +182,9 @@ def check_email_for_orders(
     results = []
     
     try:
-        # IMAP接続
-        mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        # IMAP接続（タイムアウトなしだと応答待ちで固まり、
+        #  「たまに取得できない」形で表面化するため必ず指定する）
+        mail = imaplib.IMAP4_SSL(imap_server, imap_port, timeout=30)
         mail.login(email_address, password)
         mail.select("inbox")
         
@@ -266,7 +267,7 @@ def check_email_for_orders(
 def mark_email_as_read(imap_server: str, email_address: str, password: str, email_id: str):
     """メールを既読にする"""
     try:
-        mail = imaplib.IMAP4_SSL(imap_server)
+        mail = imaplib.IMAP4_SSL(imap_server, timeout=30)
         mail.login(email_address, password)
         mail.select("inbox")
         mail.store(email_id, '+FLAGS', '\\Seen')

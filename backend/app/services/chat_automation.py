@@ -490,13 +490,13 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
         existing_order_id = verif["order_id"]
         return await queue_print_for_existing_order(existing_order_id, order_date_str)
 
-    # reviewed_by の決定
+    # reviewed_by の決定（nil UUID は「未設定」扱い）
+    if reviewed_by == "00000000-0000-0000-0000-000000000000":
+        reviewed_by = None
     if not reviewed_by:
         admin_row = sb.table("profiles").select("id").eq("tenant_id", _DEFAULT_TENANT_ID).eq("role", "admin").limit(1).execute()
         reviewed_by = admin_row.data[0]["id"] if admin_row.data else None
-    
-    if not reviewed_by:
-        return {"success": False, "error": "承認に必要な管理者プロフィールが見つかりません。"}
+    # ここで解決できなくても RPC 側が admin にフォールバックするため処理は続行する
 
     # lines の自動解決と補完
     lines_payload = [
@@ -523,7 +523,7 @@ async def approve_and_queue_print(verification_id: str, order_date_str: str, rev
             {
                 "p_verification_id": verif_id_str,
                 "p_tenant_id": _DEFAULT_TENANT_ID,
-                "p_reviewed_by": str(reviewed_by),
+                "p_reviewed_by": str(reviewed_by) if reviewed_by else None,
                 "p_order_date": order_date_str,
                 "p_correction_notes": "Approved via ChatBot Auto-action",
                 "p_lines": lines_payload,

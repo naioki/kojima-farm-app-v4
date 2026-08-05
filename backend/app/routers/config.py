@@ -172,7 +172,8 @@ async def get_email_config():
             .limit(1)
             .execute()
         )
-        if rows.data:
+        # 空レコード（初期化直後など）の場合は環境変数へフォールバック
+        if rows.data and rows.data[0].get("imap_server") and rows.data[0].get("email_address"):
             return EmailConfigOut(**rows.data[0])
     except Exception as e:
         print(f"[email_config GET] Supabase error: {e}")
