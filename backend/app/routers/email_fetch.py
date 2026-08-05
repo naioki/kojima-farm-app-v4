@@ -8,7 +8,7 @@ from __future__ import annotations
 import io
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List
 from uuid import UUID
 
@@ -41,8 +41,12 @@ def _get_email_config() -> dict:
             .limit(1)
             .execute()
         )
+        # 行が存在しても未設定（空）の場合は環境変数へフォールバックする。
+        # （テーブル作成直後の空レコードで設定が消えたように見えるのを防ぐ）
         if rows.data:
-            return rows.data[0]
+            row = rows.data[0]
+            if row.get("imap_server") and row.get("email_address") and row.get("password"):
+                return row
     except Exception as e:
         print(f"[email_config fetch] Supabase error: {e}")
 
@@ -126,10 +130,16 @@ async def fetch_email_orders():
 
     # ── 既登録の email_id を一括取得して重複チェック ────────────────────
     try:
+        # PostgREST は既定で最大 1000 行しか返さないため、
+        # 直近 90 日に絞って新しい順に取得する（重複判定に必要なのは直近分だけ）。
+        since_iso = (datetime.now() - timedelta(days=90)).isoformat()
         existing_rows = (
             sb.table("ocr_verifications")
             .select("confidence_flags")
             .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .gte("created_at", since_iso)
+            .order("created_at", desc=True)
+            .limit(1000)
             .execute()
         )
         registered_email_ids: set[str] = set()
