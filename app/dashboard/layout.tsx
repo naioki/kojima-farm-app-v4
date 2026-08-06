@@ -1,10 +1,14 @@
 import type { ReactNode } from "react";
 import { Separator } from "@/components/ui/separator";
-import { Toaster } from "sonner";
+import { createClient } from "@/lib/supabase/server";
 import { EmailFetchButton } from "./_components/email-fetch-button";
 import { MainNav } from "./_components/main-nav";
+import { UserMenu } from "./_components/user-menu";
 
-export default function DashboardLayout({ children }: { children: ReactNode }) {
+export default async function DashboardLayout({ children }: { children: ReactNode }) {
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getUser();
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
@@ -15,13 +19,16 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           </span>
           <Separator orientation="vertical" className="h-5 hidden md:block" />
           <MainNav />
-          <div className="shrink-0">
+          <div className="flex shrink-0 items-center gap-1">
             <EmailFetchButton />
+            <UserMenu email={data.user?.email ?? null} />
           </div>
         </div>
       </header>
       <main className="flex-1">{children}</main>
-      <Toaster richColors position="top-right" />
+      {/* Toaster は app/layout.tsx に1つだけ置く。
+          ここにも置くと sonner が両方の Toaster に配信するため、
+          ダッシュボード配下で全てのトーストが2枚重なって表示されていた。 */}
     </div>
   );
 }

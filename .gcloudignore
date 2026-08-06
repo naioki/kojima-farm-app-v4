@@ -1,6 +1,13 @@
 .git/
 node_modules/
 .next/
-backend/
 docs/
 tsconfig.tsbuildinfo
+backend/.venv/
+backend/tests/
+**/__pycache__/
+
+# backend/ 全体は除外しない。
+# Dockerfile.allinone（1コンテナ構成）が backend/app と backend/assets を
+# COPY するため、ビルドコンテキストに含まれている必要がある。
+# 2サービス構成のビルドでも含まれるが、増えるのは 6MB 程度で実害はない。

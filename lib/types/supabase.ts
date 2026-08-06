@@ -1596,6 +1596,22 @@ export type ProductStandardRow = {
   tenant_id?: string
   [key: string]: unknown
 }
-export type OcrStatus = 'pending' | 'processing' | 'done' | 'error' | 'review_needed' | 'approved'
+/**
+ * ocr_verifications.status の実際の値。
+ *
+ * 以前は 'processing' | 'done' | 'error' | 'review_needed' | 'approved' という
+ * DB に存在しない値が並び、実在する 'needs_review' | 'corrected' |
+ * 'auto_accepted' | 'rejected' が欠けていた。この不一致が
+ * app/actions/ocr-actions.ts の @ts-nocheck の原因のひとつになっていた。
+ *
+ * 正しい集合は system_design_v4.md §8 の ocr_verifications 定義、および
+ * 画面側の分岐（verification-list.tsx / verification-form.tsx）と一致する。
+ */
+export type OcrStatus =
+  | 'pending'
+  | 'needs_review'
+  | 'corrected'
+  | 'auto_accepted'
+  | 'rejected'
 export type UnitType = string
 export type ReceiptMode = string

@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import { fetchShippingSheetPdfBlob } from "@/lib/api-client";
+import { downloadShippingSheetPdf, NoDataError } from "@/lib/download";
 import {
   getProducts,
   type Product,
@@ -66,30 +66,27 @@ export function ItemSheetDialog() {
     }
     setIsDownloading(true);
     try {
-      const blob = await fetchShippingSheetPdfBlob({
-        date,
-        productId: productId === ALL_PRODUCTS ? undefined : productId,
-        paperSize,
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
       const productName =
         productId === ALL_PRODUCTS
           ? "全品目"
           : products?.find((p) => p.id === productId)?.name ?? "品目";
-      a.download = `出荷表_${productName}_${date.replace(/-/g, "")}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await downloadShippingSheetPdf({
+        date,
+        productId: productId === ALL_PRODUCTS ? undefined : productId,
+        paperSize,
+        filename: `出荷表_${productName}_${date.replace(/-/g, "")}.pdf`,
+      });
       toast.success("出荷票 PDF をダウンロードしました");
       setOpen(false);
     } catch (err) {
-      if (err instanceof Error && err.message === "NO_DATA") {
+      if (err instanceof NoDataError) {
         toast.info("指定日に該当する注文がありません", {
           description: "品目・日付を変えて再度お試しください。",
         });
       } else {
-        toast.error("出荷票の作成に失敗しました", { description: String(err) });
+        toast.error("出荷票の作成に失敗しました", {
+          description: err instanceof Error ? err.message : String(err),
+        });
       }
     } finally {
       setIsDownloading(false);

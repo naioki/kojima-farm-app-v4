@@ -23,27 +23,18 @@
   --radius: 0.625rem;
 }
 
-.dark {
-  --background: 222.2 84% 4.9%;
-  --foreground: 210 40% 98%;
-  --card: 222.2 84% 4.9%;
-  --card-foreground: 210 40% 98%;
-  --popover: 222.2 84% 4.9%;
-  --popover-foreground: 210 40% 98%;
-  --primary: 217.2 91.2% 59.8%;
-  --primary-foreground: 222.2 47.4% 11.2%;
-  --secondary: 217.2 32.6% 17.5%;
-  --secondary-foreground: 210 40% 98%;
-  --muted: 217.2 32.6% 17.5%;
-  --muted-foreground: 215 20.2% 65.1%;
-  --accent: 217.2 32.6% 17.5%;
-  --accent-foreground: 210 40% 98%;
-  --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
-  --ring: 224.3 76.3% 48%;
-}
+/*
+ * ダークモードのトークン（.dark ブロック）はここにあったが削除した。
+ *
+ *   - .dark クラスを付ける仕組みが無い（テーマプロバイダもトグルUIも未実装）
+ *   - app/ 配下に dark: バリアントが1つも無い
+ *   - 値も shadcn 既定の青系で、ライトのブランドカラー（緑系）と無関係だった
+ *
+ * つまり「動かないダークモード」の見た目だけが残っていた状態。
+ * 実装するには bg-green-100 / text-amber-800 のようにハードコードされた
+ * 配色を全画面ぶん洗い出す必要があり、独立した作業として扱うべきなので、
+ * ここでは誤解を招く死んだ定義を消すだけにしている。
+ */
 
 @theme inline {
   --color-background: hsl(var(--background));
@@ -65,8 +56,10 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* 日本語を含む本文用。Geist を先に置いて英数字の字面を保ち、
+     日本語グリフを Noto Sans JP が受ける。 */
+  --font-sans: var(--font-geist-sans), var(--font-noto-sans-jp), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), var(--font-noto-sans-jp), monospace;
   --radius: var(--radius);
 }
 
@@ -77,4 +70,19 @@
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
+  font-family: var(--font-sans);
+}
+
+/*
+ * 横スクロールコンテナのスクロールバーを隠す。
+ * main-nav がこのクラスを使っていたが、Tailwind v4 の標準ユーティリティには
+ * 存在せず、ここにも定義が無かったため何も効いていなかった。
+ */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
 }

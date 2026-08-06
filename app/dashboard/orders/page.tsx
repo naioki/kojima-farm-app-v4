@@ -3,8 +3,31 @@ import { OrdersClient } from "./_components/orders-client";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 
-export default async function OrdersPage() {
-  const result = await getOrders();
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const VALID_STATUSES = ["draft", "confirmed", "cancelled"];
+
+/** URL の値をそのまま DB クエリに渡さない（形式を検証してから使う）。 */
+function sanitizeDate(value: string | undefined): string | undefined {
+  return value && DATE_PATTERN.test(value) ? value : undefined;
+}
+
+function sanitizeStatus(value: string | undefined): string | undefined {
+  return value && VALID_STATUSES.includes(value) ? value : undefined;
+}
+
+export default async function OrdersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ from?: string; to?: string; status?: string }>;
+}) {
+  const params = await searchParams;
+  const filters = {
+    from: sanitizeDate(params.from),
+    to: sanitizeDate(params.to),
+    status: sanitizeStatus(params.status),
+  };
+
+  const result = await getOrders(filters);
 
   if (!result.success) {
     return (
@@ -18,5 +41,11 @@ export default async function OrdersPage() {
     );
   }
 
-  return <OrdersClient initialOrders={result.data} />;
+  return (
+    <OrdersClient
+      initialOrders={result.data.items}
+      truncated={result.data.truncated}
+      filters={filters}
+    />
+  );
 }

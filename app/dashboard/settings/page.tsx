@@ -11,8 +11,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { PromptConfigCard } from "./_components/prompt-config-card";
 import { CompanySettingsCard } from "./_components/company-settings-card";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import {
+  getChatConfig,
+  getEmailConfig,
+  saveChatConfig,
+  saveEmailConfig,
+  testEmailConnection,
+} from "@/app/actions/config-actions";
 
 interface EmailConfig {
   imap_server: string;
@@ -30,6 +35,20 @@ interface ChatConfig {
   google_chat_webhook_url: string;
   allowed_line_users: string;
   allowed_discord_users: string;
+}
+
+/** バックエンドは未設定を null で返すが、入力欄は制御コンポーネントなので空文字に寄せる。 */
+function normalizeChatConfig(data: {
+  [K in keyof ChatConfig]: string | null;
+}): ChatConfig {
+  return {
+    discord_webhook_url: data.discord_webhook_url ?? "",
+    line_works_bot_id: data.line_works_bot_id ?? "",
+    line_works_api_token: data.line_works_api_token ?? "",
+    google_chat_webhook_url: data.google_chat_webhook_url ?? "",
+    allowed_line_users: data.allowed_line_users ?? "",
+    allowed_discord_users: data.allowed_discord_users ?? "",
+  };
 }
 
 export default function SettingsPage() {
@@ -54,114 +73,86 @@ export default function SettingsPage() {
   const [isSavingChat, startSaveChat] = useTransition();
   const [isTesting, startTest] = useTransition();
 
-  // 現在の設定を取得
+  // 現在の設定を取得（Server Action 経由。ブラウザから FastAPI を直接叩かない）
   useEffect(() => {
-    // メール設定取得
-    fetch(`${API_URL}/api/config/email`)
-      .then((r) => r.json())
-      .then((data) => {
-        setConfig((prev) => ({ ...prev, ...data, password: "" }));
-      })
-      .catch(() => toast.error("メール設定の取得に失敗しました"));
+    let cancelled = false;
+    (async () => {
+      const [emailResult, chatResult] = await Promise.all([
+        getEmailConfig(),
+        getChatConfig(),
+      ]);
+      if (cancelled) return;
 
-    // チャット設定取得
-    fetch(`${API_URL}/api/config/chat`)
-      .then((r) => r.json())
-      .then((data) => {
-        setChatConfig(data);
-      })
-      .catch(() => toast.error("チャット連携設定の取得に失敗しました"))
-      .finally(() => setLoading(false));
+      if (emailResult.success) {
+        setConfig((prev) => ({
+          ...prev,
+          ...emailResult.data,
+          sender_email: emailResult.data.sender_email ?? "",
+          password: "",
+        }));
+      } else {
+        toast.error("メール設定の取得に失敗しました", {
+          description: emailResult.error,
+        });
+      }
+
+      if (chatResult.success) {
+        setChatConfig((prev) => ({ ...prev, ...normalizeChatConfig(chatResult.data) }));
+      } else {
+        toast.error("チャット連携設定の取得に失敗しました", {
+          description: chatResult.error,
+        });
+      }
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
-
 
   function handleSave() {
     startSave(async () => {
-      const payload = { ...config };
-      // パスワードが空の場合は送らない
-      if (!payload.password) delete payload.password;
-
-      const res = await fetch(`${API_URL}/api/config/email`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const result = await saveEmailConfig({
+        ...config,
+        sender_email: config.sender_email || null,
       });
-
-      if (res.ok) {
-        try {
-          const saved = await res.json();
-          toast.success("メール設定を保存しました");
-          // レスポンスで確定値に更新（パスワードは非返却なのでクリアのみ）
-          setConfig((prev) => ({ ...prev, ...saved, password: "" }));
-        } catch {
-          toast.success("メール設定を保存しました");
-        }
+      if (result.success) {
+        toast.success("メール設定を保存しました");
+        // 確定値で更新（パスワードは返却されないのでクリアする）
+        setConfig((prev) => ({
+          ...prev,
+          ...result.data,
+          sender_email: result.data.sender_email ?? "",
+          password: "",
+        }));
       } else {
-        let errDetail = "サーバーエラーが発生しました";
-        try {
-          const err = await res.json();
-          errDetail = err.detail || errDetail;
-        } catch {
-          errDetail = await res.text().catch(() => res.statusText);
-        }
-        toast.error("保存に失敗しました", { description: errDetail });
+        toast.error("保存に失敗しました", { description: result.error });
       }
     });
   }
 
   function handleTest() {
     startTest(async () => {
-      toast.info("メール接続をテスト中...");
-      try {
-        const res = await fetch(`${API_URL}/api/email/fetch`, { method: "GET" });
-        if (res.ok) {
-          try {
-            const data = await res.json();
-            toast.success(`接続成功！ ${data.fetched} 件の画像を取得しました`);
-          } catch {
-            toast.success("接続テストに成功しました");
-          }
-        } else {
-          let errDetail = "接続に失敗しました";
-          try {
-            const data = await res.json();
-            errDetail = data.detail || errDetail;
-          } catch {
-            errDetail = await res.text().catch(() => res.statusText);
-          }
-          toast.error("接続失敗", { description: errDetail });
-        }
-      } catch {
-        toast.error("バックエンドに接続できません");
+      toast.info("メール接続を確認中...");
+      const result = await testEmailConnection();
+      if (result.success) {
+        toast.success("接続に成功しました", { description: result.data.message });
+      } else {
+        toast.error("接続に失敗しました", { description: result.error });
       }
     });
   }
 
   function handleSaveChat() {
     startSaveChat(async () => {
-      const res = await fetch(`${API_URL}/api/config/chat`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(chatConfig),
-      });
-
-      if (res.ok) {
-        try {
-          const saved = await res.json();
-          toast.success("チャット連携設定を保存しました");
-          setChatConfig(saved);
-        } catch {
-          toast.success("チャット連携設定を保存しました");
-        }
+      const result = await saveChatConfig(chatConfig);
+      if (result.success) {
+        toast.success("チャット連携設定を保存しました");
+        setChatConfig((prev) => ({ ...prev, ...normalizeChatConfig(result.data) }));
       } else {
-        let errDetail = "サーバーエラーが発生しました";
-        try {
-          const err = await res.json();
-          errDetail = err.detail || errDetail;
-        } catch {
-          errDetail = await res.text().catch(() => res.statusText);
-        }
-        toast.error("チャット連携設定の保存に失敗しました", { description: errDetail });
+        toast.error("チャット連携設定の保存に失敗しました", {
+          description: result.error,
+        });
       }
     });
   }
@@ -176,7 +167,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-6 max-w-2xl mx-auto space-y-6">
+    <div className="p-3 max-w-2xl mx-auto space-y-6 md:p-6">
       <div>
         <h1 className="text-2xl font-bold">設定</h1>
         <p className="text-sm text-muted-foreground mt-1">メールサーバー（IMAP）の接続設定</p>
@@ -193,7 +184,7 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>IMAP サーバー *</Label>
               <Input
@@ -213,7 +204,7 @@ export default function SettingsPage() {
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>メールアカウント *</Label>
               <Input
@@ -257,7 +248,7 @@ export default function SettingsPage() {
 
           <Separator />
 
-          <div className="flex gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row">
             <Button onClick={handleSave} disabled={isSaving || isTesting} className="flex-1">
               {isSaving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
               保存
@@ -269,7 +260,7 @@ export default function SettingsPage() {
               className="flex-1"
             >
               {isTesting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <TestTube2 className="h-4 w-4 mr-2" />}
-              接続テスト & メール取得
+              接続テスト
             </Button>
           </div>
         </CardContent>
@@ -326,7 +317,7 @@ export default function SettingsPage() {
           {/* LINE Works */}
           <div className="space-y-3">
             <h3 className="font-semibold text-sm text-primary">● LINE Works 連携</h3>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>LINE Works Bot ID</Label>
                 <Input

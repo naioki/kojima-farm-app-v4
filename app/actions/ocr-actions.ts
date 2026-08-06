@@ -7,7 +7,9 @@ import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { CorrectedDataSchema, type CorrectedData } from '@/lib/schemas/ocr'
 import { parseVerification as apiParse, verifyOcr, type ParsedLine as ApiParsedLine } from '@/lib/api-client'
 
-type OcrStatus = 'pending' | 'processing' | 'done' | 'error' | 'review_needed' | 'approved'
+import type { OcrStatus } from '@/lib/types/supabase'
+import { dateRangeCutoff, type DateRange } from '@/lib/verification'
+
 type Json = unknown
 
 type ActionResult<T = void> =
@@ -43,12 +45,23 @@ export type ApproveResult = {
   lines_count: number
 }
 
+/** 1回の取得で読む最大件数。parsed_lines の JSON を含むため上限を設ける。 */
+const VERIFICATION_FETCH_LIMIT = 200
+
+export type VerificationPage = {
+  items: PendingVerification[]
+  /** 上限に達して打ち切られたか。画面で「以降は表示していない」ことを示す。 */
+  truncated: boolean
+  /** 適用した期間。null は全期間。 */
+  dateRange: DateRange
+}
+
 async function _fetchVerifications(
   supabase: Awaited<ReturnType<typeof createClient>>,
   tenantId: string,
-  statusFilter?: string[],
-): Promise<ActionResult<PendingVerification[]>> {
-  const query = supabase
+  options: { statusFilter?: string[]; dateRange: DateRange },
+): Promise<ActionResult<VerificationPage>> {
+  let query = supabase
     .from('ocr_verifications')
     .select(`
       id,
@@ -63,16 +76,38 @@ async function _fetchVerifications(
     `)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
+    // 打ち切りを検出するため上限+1件まで読む
+    .limit(VERIFICATION_FETCH_LIMIT + 1)
 
-  const { data, error } = statusFilter
-    ? await query.in('status', statusFilter as OcrStatus[])
-    : await query
+  // 期間の絞り込みをサーバー側で行う。以前は全件を parsed_lines ごと取得して
+  // からクライアントで期間フィルタを掛けていたため、件数が増えるほど毎回の
+  // 転送量が膨らみ、設計書の目標「クライアント側操作 < 200ms」と衝突していた。
+  const cutoff = dateRangeCutoff(options.dateRange, Date.now())
+  if (cutoff) {
+    query = query.gte('created_at', cutoff.toISOString())
+  }
+
+  if (options.statusFilter) {
+    query = query.in('status', options.statusFilter as OcrStatus[])
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error('[fetchVerifications] DBエラー:', error)
     return { success: false, error: 'データの取得中にエラーが発生しました。' }
   }
-  return { success: true, data: (data ?? []) as unknown as PendingVerification[] }
+
+  const rows = (data ?? []) as unknown as PendingVerification[]
+  const truncated = rows.length > VERIFICATION_FETCH_LIMIT
+  return {
+    success: true,
+    data: {
+      items: truncated ? rows.slice(0, VERIFICATION_FETCH_LIMIT) : rows,
+      truncated,
+      dateRange: options.dateRange,
+    },
+  }
 }
 
 async function _getAuthProfile() {
@@ -87,24 +122,25 @@ async function _getAuthProfile() {
   return { supabase, profile, tenantId }
 }
 
-export async function getPendingVerifications(): Promise<ActionResult<PendingVerification[]>> {
+/**
+ * 指定期間の受注票を取得する。
+ *
+ * 未処理／全件の切り替えは、取得した期間内のデータに対してクライアント側で
+ * 行う（どちらも同じ窓の部分集合なので再取得は不要）。
+ * 一方で期間の絞り込みはサーバー側で行う。全件を parsed_lines ごと読むのを
+ * やめるのが目的なので、ここを緩めると意味がなくなる。
+ *
+ * 旧 getPendingVerifications は呼び出し箇所が無く削除した。
+ */
+export async function getVerifications(
+  dateRange: DateRange = '30d',
+): Promise<ActionResult<VerificationPage>> {
   try {
     const auth = await _getAuthProfile()
     if ('error' in auth) return { success: false, error: auth.error! }
-    return _fetchVerifications(auth.supabase, auth.tenantId, ['pending', 'needs_review'])
+    return _fetchVerifications(auth.supabase, auth.tenantId, { dateRange })
   } catch (err) {
-    console.error('[getPendingVerifications] 予期しないエラー:', err)
-    return { success: false, error: '予期しないエラーが発生しました。' }
-  }
-}
-
-export async function getAllVerifications(): Promise<ActionResult<PendingVerification[]>> {
-  try {
-    const auth = await _getAuthProfile()
-    if ('error' in auth) return { success: false, error: auth.error! }
-    return _fetchVerifications(auth.supabase, auth.tenantId)
-  } catch (err) {
-    console.error('[getAllVerifications] 予期しないエラー:', err)
+    console.error('[getVerifications] 予期しないエラー:', err)
     return { success: false, error: '予期しないエラーが発生しました。' }
   }
 }
@@ -135,6 +171,101 @@ export async function updateRawText(
     if (error) return { success: false, error: 'テキストの更新に失敗しました。' }
     return { success: true, data: undefined }
   } catch {
+    return { success: false, error: '予期しないエラーが発生しました。' }
+  }
+}
+
+// ─── rejectVerification ─────────────────────────────────────────────────────
+/**
+ * 受注票を却下して未処理キューから外す。
+ *
+ * これまで `rejected` は表示だけ実装されていて、却下する手段が UI にも
+ * Server Action にも無かった。そのため OCR が失敗した受注票や、注文ではない
+ * メールを未処理から外せず、「未処理 N」のバッジが永久に減らないゴミが
+ * 溜まり続けていた。
+ *
+ * 一方で受注削除（order-actions.deleteOrder）は検証を needs_review に戻すため、
+ * 未処理を増やす方向の弁しか存在しない状態だった。
+ */
+export async function rejectVerification(
+  verificationId: string,
+  reason?: string,
+): Promise<ActionResult> {
+  try {
+    const auth = await _getAuthProfile()
+    if ('error' in auth) return { success: false, error: auth.error! }
+
+    const { data: row } = await auth.supabase
+      .from('ocr_verifications')
+      .select('id, status, order_id, confidence_flags')
+      .eq('id', verificationId)
+      .eq('tenant_id', auth.tenantId)
+      .single()
+
+    if (!row) {
+      return { success: false, error: '対象の受注票が見つかりません。' }
+    }
+    // 受注が作られているものを却下すると帳票と実績が食い違うため止める。
+    if (row.order_id) {
+      return {
+        success: false,
+        error: 'すでに受注が作成されています。却下する場合は受注一覧から受注を削除してください。',
+      }
+    }
+
+    const flags = (row.confidence_flags as Record<string, unknown>) ?? {}
+    const { error } = await auth.supabase
+      .from('ocr_verifications')
+      .update({
+        status: 'rejected',
+        reviewed_by: auth.profile.id,
+        confidence_flags: {
+          ...flags,
+          rejected_at: new Date().toISOString(),
+          rejected_reason: reason?.trim() || null,
+        },
+      })
+      .eq('id', verificationId)
+      .eq('tenant_id', auth.tenantId)
+
+    if (error) {
+      console.error('[rejectVerification] DBエラー:', error)
+      return { success: false, error: '却下の保存に失敗しました。' }
+    }
+
+    revalidatePath('/dashboard/verifications')
+    return { success: true, data: undefined }
+  } catch (err) {
+    console.error('[rejectVerification] 予期しないエラー:', err)
+    return { success: false, error: '予期しないエラーが発生しました。' }
+  }
+}
+
+// ─── restoreVerification ────────────────────────────────────────────────────
+/** 却下を取り消して未処理に戻す（誤って却下した場合の復帰経路）。 */
+export async function restoreVerification(
+  verificationId: string,
+): Promise<ActionResult> {
+  try {
+    const auth = await _getAuthProfile()
+    if ('error' in auth) return { success: false, error: auth.error! }
+
+    const { error } = await auth.supabase
+      .from('ocr_verifications')
+      .update({ status: 'needs_review' })
+      .eq('id', verificationId)
+      .eq('tenant_id', auth.tenantId)
+      .eq('status', 'rejected')
+
+    if (error) {
+      console.error('[restoreVerification] DBエラー:', error)
+      return { success: false, error: '復帰に失敗しました。' }
+    }
+
+    revalidatePath('/dashboard/verifications')
+    return { success: true, data: undefined }
+  } catch (err) {
+    console.error('[restoreVerification] 予期しないエラー:', err)
     return { success: false, error: '予期しないエラーが発生しました。' }
   }
 }
@@ -186,7 +317,8 @@ export async function approveWithFastApi(
         unit: l.unit, boxes: l.boxes, remainder: l.remainder,
       })),
       correction_notes: correctionNotes,
-      reviewed_by: user.id,
+      // reviewed_by は送らない。承認者はバックエンドがアクセストークンから決める
+      // （クライアント指定を信用すると承認の名義を差し替えられるため）。
     })
     revalidatePath('/dashboard/verifications')
     revalidatePath('/dashboard/orders')

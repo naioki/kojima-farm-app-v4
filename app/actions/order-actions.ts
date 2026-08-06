@@ -2,7 +2,6 @@
 'use server'
 
 import { createClient, createServiceClient } from '@/lib/supabase/server'
-import { fetchPdfBlob } from '@/lib/api-client'
 
 type ActionResult<T = void> =
   | { success: true; data: T }
@@ -99,12 +98,31 @@ async function _getAuthProfile() {
   return { supabase, profile, tenantId }
 }
 
-export async function getOrders(): Promise<ActionResult<Order[]>> {
+/** 1回の取得で読む最大件数。 */
+const ORDER_FETCH_LIMIT = 200
+
+export type OrderFilters = {
+  /** 受注日の下限（YYYY-MM-DD）。 */
+  from?: string
+  /** 受注日の上限（YYYY-MM-DD）。 */
+  to?: string
+  status?: string
+}
+
+export type OrderPage = {
+  items: Order[]
+  /** 上限に達して打ち切られたか。画面で明示する。 */
+  truncated: boolean
+}
+
+export async function getOrders(
+  filters: OrderFilters = {},
+): Promise<ActionResult<OrderPage>> {
   try {
     const auth = await _getAuthProfile()
     if ('error' in auth) return { success: false, error: auth.error! }
 
-    const { data, error } = await auth.supabase
+    let query = auth.supabase
       .from('orders')
       .select(`
         id, order_date, source, status, notes, created_at,
@@ -113,24 +131,38 @@ export async function getOrders(): Promise<ActionResult<Order[]>> {
       .eq('tenant_id', auth.tenantId)
       .order('order_date', { ascending: false })
       .order('created_at', { ascending: false })
-      .limit(200)
+      // 打ち切りを検出するため上限+1件まで読む
+      .limit(ORDER_FETCH_LIMIT + 1)
+
+    // 絞り込みはサーバー側で行う。以前は無条件で 200 件取得し、201件目以降が
+    // 画面に何の表示もなく消えていた（しかも検索も期間指定も無かったため
+    // 「先週の○○店の分」を探す手段がなかった）。
+    if (filters.from) query = query.gte('order_date', filters.from)
+    if (filters.to) query = query.lte('order_date', filters.to)
+    if (filters.status) query = query.eq('status', filters.status)
+
+    const { data, error } = await query
 
     if (error) {
       console.error('[getOrders] DBエラー:', error)
       return { success: false, error: 'データの取得中にエラーが発生しました。' }
     }
 
-    const orders: Order[] = (data ?? []).map((row: Record<string, unknown>) => ({
-      id: row.id as string,
-      order_date: row.order_date as string,
-      source: row.source as string,
-      status: row.status as string,
-      notes: row.notes as string | null,
-      created_at: row.created_at as string,
-      line_count: (row.order_lines as { count: number }[])?.[0]?.count ?? 0,
-    }))
+    const rows = data ?? []
+    const truncated = rows.length > ORDER_FETCH_LIMIT
+    const orders: Order[] = (truncated ? rows.slice(0, ORDER_FETCH_LIMIT) : rows).map(
+      (row: Record<string, unknown>) => ({
+        id: row.id as string,
+        order_date: row.order_date as string,
+        source: row.source as string,
+        status: row.status as string,
+        notes: row.notes as string | null,
+        created_at: row.created_at as string,
+        line_count: (row.order_lines as { count: number }[])?.[0]?.count ?? 0,
+      }),
+    )
 
-    return { success: true, data: orders }
+    return { success: true, data: { items: orders, truncated } }
   } catch (err) {
     console.error('[getOrders] 予期しないエラー:', err)
     return { success: false, error: '予期しないエラーが発生しました。' }

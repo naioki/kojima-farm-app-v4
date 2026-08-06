@@ -12,22 +12,18 @@ from datetime import datetime, timedelta
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.auth import AuthContext, require_user
 from app.models import EmailFetchResponse
-from app.services.email_reader import check_email_for_orders
+from app.services.email_reader import check_email_for_orders, friendly_imap_error
 from app.services.ocr_parser import parse_order_text, validate_and_fix_order_data
 from app.services.supabase_client import get_supabase
 
 router = APIRouter()
 
-# デフォルトテナント（single-tenant 構成）
-_DEFAULT_TENANT_ID = os.environ.get(
-    "DEFAULT_TENANT_ID", "00000000-0000-0000-0000-000000000001"
-)
 
-
-def _get_email_config() -> dict:
+def _get_email_config(tenant_id: str) -> dict:
     """
     Supabase の email_config テーブルからメール設定を取得。
     テーブルが存在しない場合は環境変数にフォールバック。
@@ -37,7 +33,7 @@ def _get_email_config() -> dict:
         rows = (
             sb.table("email_config")
             .select("*")
-            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .limit(1)
             .execute()
         )
@@ -61,40 +57,16 @@ def _get_email_config() -> dict:
     }
 
 
-def _get_friendly_imap_error(e: Exception) -> str:
-    import socket
-    import ssl
-    import imaplib
-    
-    err_str = str(e)
-    # ホスト名解決失敗（サーバー名の誤りなど）
-    if isinstance(e, socket.gaierror) or "getaddrinfo" in err_str or "gaierror" in err_str:
-        return "IMAPサーバーへの接続に失敗しました。サーバー名（ホスト名）が正しいかご確認ください。"
-    # 接続タイムアウト
-    if isinstance(e, (socket.timeout, TimeoutError)) or "timed out" in err_str.lower():
-        return "メールサーバーへの接続がタイムアウトしました。サーバー名、ポート番号、またはネットワーク接続状況をご確認ください。"
-    # 接続拒否（ポート番号の誤りなど）
-    if isinstance(e, ConnectionRefusedError) or "connection refused" in err_str.lower():
-        return "メールサーバーへの接続が拒否されました。ポート番号（SSLは通常993）が正しいかご確認ください。"
-    # ログインエラー（メールアドレス/パスワードの間違いなど）
-    if isinstance(e, imaplib.IMAP4.error) or "login failed" in err_str.lower() or "authenticationfailed" in err_str.lower():
-        return "メールボックスのログインに失敗しました。メールアドレスまたはパスワードが正しいかご確認ください。"
-    # SSL/TLS エラー
-    if isinstance(e, ssl.SSLError) or "ssl" in err_str.lower():
-        return "SSL/TLS暗号化接続エラーが発生しました。ポート番号（SSLは通常993）が正しいかご確認ください。"
-    
-    return f"メールサーバー接続エラー: {err_str}"
-
-
 @router.get("/fetch", response_model=EmailFetchResponse)
-async def fetch_email_orders():
+async def fetch_email_orders(ctx: AuthContext = Depends(require_user)):
     """
     1. IMAP でメールを取得（check_email_for_orders — v3 互換）
     2. 各添付画像を Supabase Storage にアップロード
     3. ocr_verifications レコードを status=pending で作成
     4. 作成した verification_id のリストを返す
     """
-    config = _get_email_config()
+    tenant_id = ctx.tenant_id
+    config = _get_email_config(tenant_id)
 
     imap_server: str = config.get("imap_server", "")
     imap_port: int = int(config.get("imap_port", 993))
@@ -121,7 +93,7 @@ async def fetch_email_orders():
             imap_port=imap_port,
         )
     except Exception as e:
-        friendly_error = _get_friendly_imap_error(e)
+        friendly_error = friendly_imap_error(e)
         raise HTTPException(status_code=502, detail=friendly_error)
 
     sb = get_supabase()
@@ -136,7 +108,7 @@ async def fetch_email_orders():
         existing_rows = (
             sb.table("ocr_verifications")
             .select("confidence_flags")
-            .eq("tenant_id", _DEFAULT_TENANT_ID)
+            .eq("tenant_id", tenant_id)
             .gte("created_at", since_iso)
             .order("created_at", desc=True)
             .limit(1000)
@@ -196,7 +168,7 @@ async def fetch_email_orders():
                     sb.table("ocr_verifications").insert(
                         {
                             "id": verif_id,
-                            "tenant_id": _DEFAULT_TENANT_ID,
+                            "tenant_id": tenant_id,
                             "image_url": image_url,
                             "status": status,
                             "raw_ocr_json": raw_ocr_json,
@@ -250,7 +222,7 @@ async def fetch_email_orders():
                     sb.table("ocr_verifications").insert(
                         {
                             "id": verif_id,
-                            "tenant_id": _DEFAULT_TENANT_ID,
+                            "tenant_id": tenant_id,
                             "image_url": image_url,
                             "status": "pending",
                             "raw_ocr_json": {},

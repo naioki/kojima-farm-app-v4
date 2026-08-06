@@ -14,9 +14,10 @@ from datetime import date
 from typing import Any, Dict, List
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.auth import AuthContext, assert_tenant, require_user
 from app.models import OrderDetail, OrderLineSummary, OrderSummary
 from app.services.destination import format_supply_destination, split_supply_destination
 from app.services.ocr_parser import generate_labels_from_data, generate_summary_table
@@ -120,7 +121,11 @@ def _fetch_order_lines(sb, order_id: str) -> List[OrderLineSummary]:
 # ─── GET /api/orders ─────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[OrderSummary])
-async def list_orders(limit: int = 50, offset: int = 0):
+async def list_orders(
+    limit: int = 50,
+    offset: int = 0,
+    ctx: AuthContext = Depends(require_user),
+):
     """最近の注文一覧（ページネーション付き）— 明細数は集計クエリで取得"""
     sb = get_supabase()
 
@@ -128,6 +133,7 @@ async def list_orders(limit: int = 50, offset: int = 0):
     rows = (
         sb.table("orders")
         .select("id, order_date, status, source, created_at, order_lines(id)")
+        .eq("tenant_id", ctx.tenant_id)
         .order("order_date", desc=True)
         .range(offset, offset + limit - 1)
         .execute()
@@ -159,6 +165,7 @@ async def download_shipping_sheet_pdf(
     target_date: date,
     product_id: str | None = None,
     paper_size: str = "A4",
+    ctx: AuthContext = Depends(require_user),
 ):
     """
     品目別出荷票（パック作業用の「出荷表」カード）PDF。
@@ -178,6 +185,7 @@ async def download_shipping_sheet_pdf(
     orders_rows = (
         sb.table("orders")
         .select("id, order_date")
+        .eq("tenant_id", ctx.tenant_id)
         .eq("order_date", target_date.isoformat())
         .neq("status", "cancelled")
         .execute()
@@ -279,18 +287,19 @@ async def download_shipping_sheet_pdf(
 
 
 @router.get("/{order_id}", response_model=OrderDetail)
-async def get_order(order_id: UUID):
+async def get_order(order_id: UUID, ctx: AuthContext = Depends(require_user)):
     sb = get_supabase()
     order_row = (
         sb.table("orders")
-        .select("id, order_date, status, source, created_at")
+        .select("id, order_date, status, source, created_at, tenant_id")
         .eq("id", str(order_id))
-        .single()
+        .limit(1)
         .execute()
     )
     if not order_row.data:
-        raise HTTPException(status_code=404, detail="order not found")
-    o = order_row.data
+        raise HTTPException(status_code=404, detail="受注が見つかりません。")
+    o = order_row.data[0]
+    assert_tenant(o.get("tenant_id"), ctx, "受注")
 
     lines = _fetch_order_lines(sb, str(order_id))
 
@@ -308,7 +317,11 @@ async def get_order(order_id: UUID):
 # ─── GET /api/orders/{id}/pdf ────────────────────────────────────────────────
 
 @router.get("/{order_id}/pdf")
-async def download_pdf(order_id: UUID, reverse: int = 0):
+async def download_pdf(
+    order_id: UUID,
+    reverse: int = 0,
+    ctx: AuthContext = Depends(require_user),
+):
     """
     order_lines → label list → LabelPDFGenerator → PDF stream
     """
@@ -316,14 +329,15 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
 
     order_row = (
         sb.table("orders")
-        .select("id, order_date, status")
+        .select("id, order_date, status, tenant_id")
         .eq("id", str(order_id))
-        .single()
+        .limit(1)
         .execute()
     )
     if not order_row.data:
-        raise HTTPException(status_code=404, detail="order not found")
-    order_date: str = order_row.data["order_date"]
+        raise HTTPException(status_code=404, detail="受注が見つかりません。")
+    assert_tenant(order_row.data[0].get("tenant_id"), ctx, "受注")
+    order_date: str = order_row.data[0]["order_date"]
 
     lines = _fetch_order_lines(sb, str(order_id))
 
@@ -413,19 +427,20 @@ async def download_pdf(order_id: UUID, reverse: int = 0):
 
 # ─── POST /api/orders/{id}/sync-sheets ──────────────────────────────────────
 
-async def _get_order_data(order_id: UUID) -> OrderDetail:
+async def _get_order_data(order_id: UUID, ctx: AuthContext) -> OrderDetail:
     """内部ヘルパー: get_order ルートハンドラを直接呼ばず DB から取得"""
     sb = get_supabase()
     order_row = (
         sb.table("orders")
-        .select("id, order_date, status, source, created_at")
+        .select("id, order_date, status, source, created_at, tenant_id")
         .eq("id", str(order_id))
-        .single()
+        .limit(1)
         .execute()
     )
     if not order_row.data:
-        raise HTTPException(status_code=404, detail="order not found")
-    o = order_row.data
+        raise HTTPException(status_code=404, detail="受注が見つかりません。")
+    o = order_row.data[0]
+    assert_tenant(o.get("tenant_id"), ctx, "受注")
     lines = _fetch_order_lines(sb, str(order_id))
     return OrderDetail(
         id=o["id"],
@@ -439,7 +454,7 @@ async def _get_order_data(order_id: UUID) -> OrderDetail:
 
 
 @router.post("/{order_id}/sync-sheets")
-async def sync_to_sheets(order_id: UUID):
+async def sync_to_sheets(order_id: UUID, ctx: AuthContext = Depends(require_user)):
     """Google Sheets へ delivery rows を追記"""
     from app.services.delivery_converter import v2_result_to_delivery_rows
     from app.services.delivery_sheet_writer import append_delivery_rows, is_sheet_configured
@@ -447,7 +462,7 @@ async def sync_to_sheets(order_id: UUID):
     if not is_sheet_configured():
         raise HTTPException(status_code=503, detail="Google Sheets not configured")
 
-    order_detail = await _get_order_data(order_id)
+    order_detail = await _get_order_data(order_id, ctx)
     v2_data = [
         {
             "store": line.customer_name,

@@ -48,3 +48,5 @@ python -m pytest tests/ -v
 ## ドキュメント
 
 - [システム設計](system_design_v4.md)
+- [デプロイ手順](docs/DEPLOY.md) / [ロールバック手順](docs/ROLLBACK.md)
+- [出荷・配送作業マニュアル](docs/shipping-manual.md) — 現場（積み込み／荷降ろし）向け。開発者向けではありません

@@ -32,9 +32,9 @@ export default async function MasterPage() {
     !pricesResult.success;
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-3 space-y-6 md:p-6">
       <div>
-        <h1 className="text-2xl font-semibold">マスターデータ管理</h1>
+        <h1 className="text-xl font-semibold md:text-2xl">マスターデータ管理</h1>
         <p className="text-sm text-muted-foreground mt-1">
           顧客・商品・規格・価格マスターを管理します
         </p>
@@ -54,23 +54,28 @@ export default async function MasterPage() {
       )}
 
       <Tabs defaultValue="item-master">
-        <TabsList>
-          <TabsTrigger value="item-master">
-            📦 品目マスタ{itemMasterResult.success ? ` (${itemMasterResult.data.length})` : ""}
-          </TabsTrigger>
-          <TabsTrigger value="customers">
-            顧客{customersResult.success ? ` (${customersResult.data.length})` : ""}
-          </TabsTrigger>
-          <TabsTrigger value="products">
-            商品
-          </TabsTrigger>
-          <TabsTrigger value="standards">
-            規格
-          </TabsTrigger>
-          <TabsTrigger value="prices">
-            価格マスター{pricesResult.success ? ` (${pricesResult.data.length})` : ""}
-          </TabsTrigger>
-        </TabsList>
+        {/* 5つの日本語タブは狭い画面で TabsList（inline-flex 固定高）から
+            はみ出し、スクロールコンテナも無かったためページ全体が横に伸びていた。
+            タブ列だけを横スクロールさせる。 */}
+        <div className="-mx-3 overflow-x-auto px-3 pb-1 scrollbar-none md:mx-0 md:px-0">
+          <TabsList className="w-max">
+            <TabsTrigger value="item-master">
+              📦 品目マスタ{itemMasterResult.success ? ` (${itemMasterResult.data.length})` : ""}
+            </TabsTrigger>
+            <TabsTrigger value="customers">
+              顧客{customersResult.success ? ` (${customersResult.data.length})` : ""}
+            </TabsTrigger>
+            <TabsTrigger value="products">
+              商品
+            </TabsTrigger>
+            <TabsTrigger value="standards">
+              規格
+            </TabsTrigger>
+            <TabsTrigger value="prices">
+              価格マスター{pricesResult.success ? ` (${pricesResult.data.length})` : ""}
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="item-master" className="mt-4">
           <ItemMasterTab initialRows={itemMasterResult.success ? itemMasterResult.data : []} />

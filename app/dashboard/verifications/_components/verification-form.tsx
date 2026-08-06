@@ -1,11 +1,15 @@
 "use client";
 
-import { useForm, useFieldArray, useWatch, Controller } from "react-hook-form";
+import {
+  useForm, useFieldArray, useWatch, Controller,
+  type Control, type UseFormSetValue,
+} from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { useState, useTransition, useEffect, useCallback, useMemo } from "react";
+import { useState, useTransition, useMemo } from "react";
 import {
-  Plus, Trash2, CheckCircle, Loader2, Sparkles, Download, AlertTriangle, ArrowUp, ArrowDown,
+  Plus, Trash2, CheckCircle, Loader2, Download, AlertTriangle,
+  ArrowUp, ArrowDown, ArrowRight, Undo2, XCircle,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -24,24 +28,38 @@ import {
 
 import { HumanFormSchema, type HumanForm, type HumanLine } from "@/lib/schemas/ocr";
 import {
-  parseOcrVerification, approveWithFastApi,
+  approveWithFastApi, rejectVerification, restoreVerification,
   type PendingVerification, type MasterData,
 } from "@/app/actions/ocr-actions";
-import { fetchPdfBlob } from "@/lib/api-client";
+import { downloadOrderLabelPdf } from "@/lib/download";
+import {
+  EMPTY_FORM_LINE,
+  buildInitialFormLines,
+  compareByStoreOrder,
+  isReadonlyStatus,
+  lineTotal,
+  lineWarning,
+} from "@/lib/verification";
 import { cn } from "@/lib/utils";
 
 interface VerificationFormProps {
   verification: PendingVerification;
   masterData: MasterData;
-  onApproved?: () => void;
+  /** 完了カードの「次へ」で呼ばれる。承認直後に自動で進めない（下記参照）。 */
+  onAdvance?: (approvedId: string) => void;
+  onRejected?: (rejectedId: string) => void;
+  onRestored?: (restoredId: string) => void;
+  hasNextPending?: boolean;
 }
 
+type FormControl = Control<HumanForm>;
+
 // リアルタイム合計計算（行ごと）
-function RowTotal({ control, idx }: { control: any; idx: number }) {
+function RowTotal({ control, idx }: { control: FormControl; idx: number }) {
   const unit      = useWatch({ control, name: `lines.${idx}.unit` });
   const boxes     = useWatch({ control, name: `lines.${idx}.boxes` });
   const remainder = useWatch({ control, name: `lines.${idx}.remainder` });
-  const total     = (Number(unit) || 0) * (Number(boxes) || 0) + (Number(remainder) || 0);
+  const total     = lineTotal({ unit, boxes, remainder });
   return (
     <span className={cn("tabular-nums font-mono text-sm", total > 0 ? "font-semibold text-foreground" : "text-muted-foreground")}>
       {total > 0 ? total : "—"}
@@ -53,10 +71,10 @@ function RowTotal({ control, idx }: { control: any; idx: number }) {
 function SpecSelector({
   control, idx, masterData, setValue,
 }: {
-  control: any;
+  control: FormControl;
   idx: number;
   masterData: MasterData;
-  setValue: any;
+  setValue: UseFormSetValue<HumanForm>;
 }) {
   const itemName = useWatch({ control, name: `lines.${idx}.item` });
   const specVal  = useWatch({ control, name: `lines.${idx}.spec` });
@@ -108,72 +126,73 @@ function SpecSelector({
   );
 }
 
-function buildDefaultLine(line: PendingVerification["parsed_lines"][0]): HumanLine {
-  return {
-    store:     line.store     ?? "",
-    item:      line.item      ?? "",
-    spec:      line.spec      ?? "",
-    unit:      line.unit      ?? 0,
-    boxes:     line.boxes     ?? 0,
-    remainder: line.remainder ?? 0,
-  };
-}
-
-const READONLY_STATUSES = ["corrected", "auto_accepted", "rejected"];
 const STATUS_LABELS: Record<string, string> = {
   corrected:     "承認済み",
   auto_accepted: "自動承認済み",
   rejected:      "却下済み",
 };
 
-export function VerificationForm({ verification, masterData, onApproved }: VerificationFormProps) {
-  const isReadOnly = READONLY_STATUSES.includes(verification.status);
+/** 受注日の既定値は翌日。ローカル時刻で組み立てる（toISOString だと UTC 基準でずれる）。 */
+function defaultOrderDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+export function VerificationForm({
+  verification,
+  masterData,
+  onAdvance,
+  onRejected,
+  onRestored,
+  hasNextPending = false,
+}: VerificationFormProps) {
+  const isReadOnly = isReadonlyStatus(verification.status);
   const [isPending,  startTransition] = useTransition();
-  const [isParsing,  startParsing]    = useTransition();
   const [confirmOpen,  setConfirmOpen]  = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [isRejecting, startRejecting] = useTransition();
+  const [isRestoring, startRestoring] = useTransition();
   const [approvedOrderId, setApprovedOrderId] = useState<string | null>(null);
+  const [approvedOrderDate, setApprovedOrderDate] = useState<string | null>(null);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
+  const [pdfFailed, setPdfFailed] = useState(false);
   const [sortAsc, setSortAsc] = useState(true);
 
-  const tomorrow = new Date(Date.now() + 86400000).toISOString().split("T")[0];
-
-  const sortedInitialLines = verification.parsed_lines.length > 0
-    ? [...verification.parsed_lines]
-        .map(buildDefaultLine)
-        .sort((a, b) => {
-          const aOrd = masterData.storeOrder[a.store] ?? 999;
-          const bOrd = masterData.storeOrder[b.store] ?? 999;
-          return aOrd !== bOrd ? aOrd - bOrd : a.store.localeCompare(b.store, "ja");
-        })
-    : [{ store: "", item: "", spec: "", unit: 0, boxes: 0, remainder: 0 }];
+  const [initialLines] = useState<HumanLine[]>(() =>
+    buildInitialFormLines(verification.parsed_lines, masterData.storeOrder),
+  );
 
   const form = useForm<HumanForm>({
     resolver: zodResolver(HumanFormSchema),
     defaultValues: {
-      order_date: tomorrow,
-      lines: sortedInitialLines,
+      order_date: defaultOrderDate(),
+      lines: initialLines,
       correction_notes: "",
     },
   });
 
-  const { fields, append, remove, replace } = useFieldArray({
+  const { fields, append, remove } = useFieldArray({
     control: form.control,
     name: "lines",
   });
 
   // 配送順ソート（フォーム配列は変えず、表示順インデックスだけ計算）
-  const currentStores = useWatch({ control: form.control, name: "lines" });
+  const currentLines = useWatch({ control: form.control, name: "lines" });
   const displayIndices = useMemo(() => {
     const indices = fields.map((_, i) => i);
     return indices.sort((a, b) => {
-      const aStore = currentStores?.[a]?.store ?? "";
-      const bStore = currentStores?.[b]?.store ?? "";
-      const aOrd = masterData.storeOrder[aStore] ?? 999;
-      const bOrd = masterData.storeOrder[bStore] ?? 999;
-      const diff = aOrd !== bOrd ? aOrd - bOrd : aStore.localeCompare(bStore, "ja");
+      const diff = compareByStoreOrder(
+        currentLines?.[a]?.store ?? "",
+        currentLines?.[b]?.store ?? "",
+        masterData.storeOrder,
+      );
       return sortAsc ? diff : -diff;
     });
-  }, [fields, currentStores, masterData.storeOrder, sortAsc]);
+  }, [fields, currentLines, masterData.storeOrder, sortAsc]);
 
   // ── エラートースト ─────────────────────────────────────────────────
   function toastError(title: string, detail: string) {
@@ -184,27 +203,6 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
         onClick: () => navigator.clipboard.writeText(`${title}\n${detail}`),
       },
       duration: 12000,
-    });
-  }
-
-  // ── Gemini 解析 ───────────────────────────────────────────────────
-  function handleParse() {
-    startParsing(async () => {
-      const result = await parseOcrVerification(verification.id);
-      if (result.success) {
-        const newLines = result.data.parsed_lines.map((l) => ({
-          store:     l.store,
-          item:      l.item,
-          spec:      l.spec      ?? "",
-          unit:      l.unit      ?? 0,
-          boxes:     l.boxes     ?? 0,
-          remainder: l.remainder ?? 0,
-        }));
-        replace(newLines as HumanLine[]);
-        toast.success(`Gemini 解析完了 — ${newLines.length} 行を読み取りました`);
-      } else {
-        toastError("Gemini 解析に失敗しました", result.error);
-      }
     });
   }
 
@@ -220,10 +218,13 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
       setConfirmOpen(false);
       if (result.success) {
         setApprovedOrderId(result.data.order_id);
+        setApprovedOrderDate(result.data.order_date);
         toast.success(`受注登録完了（${result.data.lines_count} 明細）`, {
           description: `受注日: ${result.data.order_date}`,
         });
-        handlePdfDownload(result.data.order_id, result.data.order_date);
+        // 完了カードを出したうえで PDF を落とす。次の受注票へ進むのは
+        // ユーザーが「次へ」を押したとき（下記 onAdvance）。
+        void handlePdfDownload(result.data.order_id, result.data.order_date);
       } else {
         toastError("承認に失敗しました", result.error);
       }
@@ -231,25 +232,55 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
   }
 
   // ── PDF ダウンロード ─────────────────────────────────────────────
+  //
+  // 以前はここの finally で onApproved() を呼んでいた。親がリストから該当項目を
+  // 消して次の受注票を選ぶため、key が変わってこのコンポーネントが再マウントされ、
+  // 「受注登録完了 / PDF を再ダウンロード」のカードは一瞬も表示されなかった。
+  // その結果 PDF の取得に失敗しても再取得する手段が UI から消えていた。
+  // PDF は業務の最終成果物なので、その出口を閉じないようにする。
   async function handlePdfDownload(orderId?: string, orderDate?: string) {
     const id = orderId ?? approvedOrderId;
     if (!id) return;
     setIsPdfLoading(true);
+    setPdfFailed(false);
     try {
-      const blob = await fetchPdfBlob(id);
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      const dateStr = (orderDate ?? "").replace(/-/g, "");
-      a.download = dateStr ? `出荷ラベル_${dateStr}.pdf` : `出荷ラベル_${id.slice(0, 8)}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await downloadOrderLabelPdf(id, orderDate ?? approvedOrderDate ?? undefined);
     } catch (err) {
-      toastError("PDF の取得に失敗しました", String(err));
+      setPdfFailed(true);
+      toastError(
+        "PDF の取得に失敗しました",
+        err instanceof Error ? err.message : String(err),
+      );
     } finally {
       setIsPdfLoading(false);
-      if (orderId) onApproved?.();
     }
+  }
+
+  // ── 却下の取り消し ───────────────────────────────────────────────
+  function handleRestore() {
+    startRestoring(async () => {
+      const result = await restoreVerification(verification.id);
+      if (result.success) {
+        toast.success("未処理に戻しました");
+        onRestored?.(verification.id);
+      } else {
+        toastError("復帰に失敗しました", result.error);
+      }
+    });
+  }
+
+  // ── 却下 ─────────────────────────────────────────────────────────
+  function handleReject() {
+    startRejecting(async () => {
+      const result = await rejectVerification(verification.id, rejectReason);
+      setRejectOpen(false);
+      if (result.success) {
+        toast.success("却下しました", { description: "未処理から外しました。" });
+        onRejected?.(verification.id);
+      } else {
+        toastError("却下に失敗しました", result.error);
+      }
+    });
   }
 
   // ── 読み取り専用 ──────────────────────────────────────────────────
@@ -290,10 +321,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                     <td className="px-3 py-2 text-right font-mono">{line.boxes}</td>
                     <td className="px-3 py-2 text-right font-mono">{line.remainder}</td>
                     <td className="px-3 py-2 text-right font-mono font-semibold text-foreground">
-                      {(() => {
-                        const t = (line.unit ?? 0) * (line.boxes ?? 0) + (line.remainder ?? 0);
-                        return t > 0 ? t : "—";
-                      })()}
+                      {lineTotal(line) > 0 ? lineTotal(line) : "—"}
                     </td>
                   </tr>
                 ))}
@@ -301,35 +329,83 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
             </table>
           )}
         </CardContent>
+        {verification.status === "rejected" && (
+          <CardFooter className="border-t px-4 py-3 shrink-0">
+            {/* 誤って却下した場合の復帰経路。これが無いと却下が片道になる。 */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full text-xs"
+              disabled={isRestoring}
+              onClick={handleRestore}
+            >
+              {isRestoring
+                ? <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />戻しています...</>
+                : <><Undo2 className="h-3.5 w-3.5 mr-1.5" />却下を取り消して未処理に戻す</>
+              }
+            </Button>
+          </CardFooter>
+        )}
       </Card>
     );
   }
 
   // ── 承認完了 ──────────────────────────────────────────────────────
+  // 承認が済んだらこのカードで止まる。次の受注票へは「次へ」で明示的に進む。
+  // 自動で進めてしまうと、PDF が落ちなかったときに再取得できなくなる。
   if (approvedOrderId) {
     return (
       <Card className="h-full flex flex-col items-center justify-center gap-5 p-8">
-        <div className="rounded-full bg-green-100 p-5">
-          <CheckCircle className="h-12 w-12 text-green-600" />
+        <div className={cn("rounded-full p-5", pdfFailed ? "bg-amber-100" : "bg-green-100")}>
+          {pdfFailed
+            ? <AlertTriangle className="h-12 w-12 text-amber-600" />
+            : <CheckCircle className="h-12 w-12 text-green-600" />
+          }
         </div>
         <div className="text-center space-y-1">
           <p className="font-semibold text-lg">受注登録完了</p>
-          <p className="text-xs text-muted-foreground">
-            出荷ラベル PDF を自動ダウンロードしています
+          {approvedOrderDate && (
+            <p className="text-sm text-foreground font-mono">{approvedOrderDate}</p>
+          )}
+          <p className={cn(
+            "text-xs",
+            pdfFailed ? "text-amber-700 font-medium" : "text-muted-foreground",
+          )}>
+            {isPdfLoading
+              ? "出荷ラベル PDF を取得しています..."
+              : pdfFailed
+              ? "PDF の取得に失敗しました。下のボタンで再試行できます。"
+              : "出荷ラベル PDF をダウンロードしました"}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => handlePdfDownload()}
-          disabled={isPdfLoading}
-        >
-          {isPdfLoading
-            ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-            : <Download className="h-4 w-4 mr-1.5" />
-          }
-          PDF を再ダウンロード
-        </Button>
+
+        <div className="flex flex-col items-stretch gap-2 w-full max-w-[240px]">
+          <Button
+            variant={pdfFailed ? "default" : "outline"}
+            size="sm"
+            onClick={() => handlePdfDownload()}
+            disabled={isPdfLoading}
+          >
+            {isPdfLoading
+              ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+              : <Download className="h-4 w-4 mr-1.5" />
+            }
+            {pdfFailed ? "PDF をもう一度取得" : "PDF を再ダウンロード"}
+          </Button>
+          <Button
+            variant={pdfFailed ? "outline" : "default"}
+            size="sm"
+            onClick={() => onAdvance?.(verification.id)}
+          >
+            {hasNextPending
+              ? <>次の受注票へ<ArrowRight className="h-4 w-4 ml-1.5" /></>
+              : "未処理はすべて完了"}
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground text-center">
+          あとから受注一覧の画面でも PDF を再発行できます
+        </p>
       </Card>
     );
   }
@@ -350,6 +426,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
             <button
               type="button"
               onClick={() => setSortAsc((v) => !v)}
+              aria-pressed={!sortAsc}
               className="h-7 px-2 rounded text-[11px] flex items-center gap-1 border transition-colors bg-background text-muted-foreground border-input hover:text-foreground"
               title="配送順の昇順/降順を切り替え"
             >
@@ -358,20 +435,21 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                 : <><ArrowDown className="h-3 w-3" />配送順 ▼</>
               }
             </button>
+            {/* 却下。これまで rejected は表示だけ実装されていて却下する手段が
+                無く、OCR が失敗した受注票を未処理から外せなかった。 */}
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="h-7 text-xs"
-              onClick={handleParse}
-              disabled={isParsing || isPending}
+              className="h-7 text-xs text-muted-foreground hover:text-destructive"
+              onClick={() => setRejectOpen(true)}
+              disabled={isPending || isRejecting}
             >
-              {isParsing
-                ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />解析中...</>
-                : <><Sparkles className="h-3 w-3 mr-1" />Gemini 解析</>
-              }
+              <XCircle className="h-3 w-3 mr-1" />却下
             </Button>
           </div>
+          {/* 解析（Gemini）は左ペインに集約した。以前は左右2か所に解析ボタンがあり、
+              左側は結果がフォームへ反映されないまま成功トーストを出していた。 */}
         </div>
       </CardHeader>
 
@@ -417,10 +495,12 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
               <tbody>
                 {displayIndices.map((idx, displayPos) => {
                   const field     = fields[idx];
-                  const conf      = (verification.parsed_lines[idx] as any)?.confidence;
-                  // conf===0: マスタ未解決で計算不能（赤・最優先）/ 0<conf<0.9: 要確認（橙）
-                  const isUnresolved = conf === 0;
-                  const isLowConf = conf !== undefined && conf > 0 && conf < 0.9;
+                  // confidence は行データ自身から読む。以前は
+                  // verification.parsed_lines[idx] で引いていたが、フォームは
+                  // 配送順にソート済みで添字が一致せず、警告が別の行に付いていた。
+                  const warning = lineWarning(currentLines?.[idx]?.confidence);
+                  const isUnresolved = warning === "unresolved";
+                  const isLowConf = warning === "low-confidence";
                   const storeErr  = form.formState.errors.lines?.[idx]?.store;
                   const itemErr   = form.formState.errors.lines?.[idx]?.item;
 
@@ -576,7 +656,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
               size="sm"
               className="h-7 text-xs text-muted-foreground hover:text-foreground -ml-2"
               onClick={() =>
-                append({ store: "", item: "", spec: "", unit: 0, boxes: 0, remainder: 0 })
+                append({ ...EMPTY_FORM_LINE })
               }
             >
               <Plus className="h-3.5 w-3.5 mr-1" />行を追加
@@ -594,7 +674,7 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
           <Button
             type="submit"
             className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold"
-            disabled={isPending || isParsing}
+            disabled={isPending || isRejecting}
           >
             {isPending
               ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />処理中...</>
@@ -621,14 +701,14 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
                       {form.getValues("order_date")}
                     </p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {(currentStores ?? []).length} 明細
+                      {(currentLines ?? []).length} 明細
                     </p>
                   </div>
                 </div>
                 {/* 明細一覧 */}
                 <div className="rounded-lg border bg-muted/30 overflow-hidden">
                   <div className="max-h-52 overflow-auto divide-y">
-                    {(currentStores ?? []).map((line, i) => {
+                    {(currentLines ?? []).map((line, i) => {
                       const total = (Number(line.unit) || 0) * (Number(line.boxes) || 0) + (Number(line.remainder) || 0);
                       return (
                         <div key={i} className="px-3 py-1.5 flex items-center gap-2 text-xs">
@@ -658,6 +738,45 @@ export function VerificationForm({ verification, masterData, onApproved }: Verif
               {isPending
                 ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />処理中...</>
                 : "承認 ＆ PDF発行"
+              }
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 却下確認ダイアログ */}
+      <AlertDialog open={rejectOpen} onOpenChange={setRejectOpen}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>この受注票を却下しますか？</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 pt-1">
+                <p className="text-sm text-muted-foreground">
+                  未処理から外します。受注は作成されません。
+                  あとから「全件」タブで確認でき、未処理に戻すこともできます。
+                </p>
+                <Textarea
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  placeholder="理由（任意）— 例: 注文ではないメール / OCR不能"
+                  className="text-xs resize-none h-16 min-h-0"
+                />
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRejecting}>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={isRejecting}
+              onClick={(e) => {
+                e.preventDefault();
+                handleReject();
+              }}
+            >
+              {isRejecting
+                ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />処理中...</>
+                : "却下する"
               }
             </AlertDialogAction>
           </AlertDialogFooter>

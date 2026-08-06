@@ -8,6 +8,13 @@ node_modules/
 out/
 build/
 
+# Cloud Run の切り戻し先の記録（環境ごとの状態なので共有しない）
+.cloudrun-snapshot
+
+# Build artifacts (ビルドで再生成されるためコミットしない)
+*.tsbuildinfo
+.vercel/
+
 # Environment variables (機密情報 - 絶対にコミットしない)
 .env
 .env.local
@@ -48,3 +55,4 @@ temp/
 
 # Assets (大容量フォント等はGit LFS推奨)
 # assets/*.ttf
+admin_user_id.txt

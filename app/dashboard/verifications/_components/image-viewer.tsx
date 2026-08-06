@@ -9,14 +9,25 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import {
   AlertTriangle, CheckCircle, Clock, FileText, XCircle,
-  Mail, User, Calendar, Sparkles, Edit3, Eye,
+  Mail, User, Calendar, Sparkles, Edit3, Eye, Loader2, Maximize2,
 } from "lucide-react";
 import type { PendingVerification } from "@/app/actions/ocr-actions";
 import { updateRawText, parseOcrVerification } from "@/app/actions/ocr-actions";
+import { isReadonlyStatus } from "@/lib/verification";
 
 interface ImageViewerProps {
   verification: PendingVerification;
-  onParsed?: (parsedLines: PendingVerification["parsed_lines"]) => void;
+  /**
+   * 解析結果を親へ通知する。親（verification-dashboard）が状態を更新し、
+   * 右ペインのフォームを新しい行で作り直す。
+   *
+   * 以前はこの prop が呼び出し側から渡されておらず、「このテキストで解析」が
+   * 成功トーストを出すのにフォームも下の解析結果プレビューも古いままだった。
+   */
+  onParsed?: (
+    verificationId: string,
+    parsedLines: PendingVerification["parsed_lines"],
+  ) => void;
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -78,31 +89,39 @@ export function ImageViewer({ verification, onParsed }: ImageViewerProps) {
     });
   }
 
+  function runParse() {
+    startParse(async () => {
+      const parseResult = await parseOcrVerification(verification.id);
+      if (parseResult.success) {
+        toast.success("Gemini 解析が完了しました", {
+          description: `${parseResult.data.parsed_lines.length} 行を読み取りました`,
+        });
+        onParsed?.(
+          verification.id,
+          parseResult.data
+            .parsed_lines as unknown as PendingVerification["parsed_lines"],
+        );
+      } else {
+        toastError("Gemini 解析に失敗しました", parseResult.error);
+      }
+    });
+  }
+
   function handleSaveAndParse() {
     startSave(async () => {
-      // 編集テキストをDBに保存
+      // 編集テキストをDBに保存してから解析する
       const saveResult = await updateRawText(verification.id, editedText);
       if (!saveResult.success) {
         toastError("テキストの保存に失敗しました", saveResult.error);
         return;
       }
       setEditMode(false);
-      // Gemini 解析
-      startParse(async () => {
-        const parseResult = await parseOcrVerification(verification.id);
-        if (parseResult.success) {
-          toast.success("Gemini 解析が完了しました", {
-            description: `${parseResult.data.parsed_lines.length} 行を読み取りました`,
-          });
-          onParsed?.(parseResult.data.parsed_lines as unknown as PendingVerification["parsed_lines"]);
-        } else {
-          toastError("Gemini 解析に失敗しました", parseResult.error);
-        }
-      });
+      runParse();
     });
   }
 
   const isLoading = isSaving || isParsing;
+  const isReadOnly = isReadonlyStatus(verification.status);
 
   return (
     <Card className="h-full flex flex-col overflow-hidden">
@@ -189,14 +208,35 @@ export function ImageViewer({ verification, onParsed }: ImageViewerProps) {
                     </Button>
                   </>
                 ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setEditMode(true)}
-                  >
-                    <Edit3 className="h-3 w-3 mr-1" />編集・再解析
-                  </Button>
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={runParse}
+                      disabled={isLoading || isReadOnly}
+                      title={
+                        isReadOnly
+                          ? "承認済み・却下済みの受注票は再解析できません"
+                          : "この本文をもう一度 Gemini で解析する"
+                      }
+                    >
+                      {isParsing ? (
+                        <><Loader2 className="h-3 w-3 mr-1 animate-spin" />解析中...</>
+                      ) : (
+                        <><Sparkles className="h-3 w-3 mr-1" />再解析</>
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => setEditMode(true)}
+                      disabled={isLoading || isReadOnly}
+                    >
+                      <Edit3 className="h-3 w-3 mr-1" />編集
+                    </Button>
+                  </>
                 )}
               </div>
             </div>
@@ -258,6 +298,45 @@ export function ImageViewer({ verification, onParsed }: ImageViewerProps) {
         ) : (
           /* 画像メール */
           <div className="flex-1 flex flex-col overflow-hidden">
+            {/* 画像側にも解析の入口を置く。以前は画像の解析ボタンが右ペインの
+                フォームにしかなく、テキストメールのときだけ左右2か所に
+                解析ボタンが並ぶ非対称な作りになっていた。 */}
+            <div className="flex items-center justify-between px-4 py-2 border-b bg-background shrink-0">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                受注票
+              </span>
+              <div className="flex items-center gap-2">
+                <a
+                  href={verification.image_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="h-7 px-2 inline-flex items-center gap-1 rounded border border-input text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  title="画像を新しいタブで開く（拡大して確認できます）"
+                >
+                  <Maximize2 className="h-3 w-3" />拡大
+                </a>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={runParse}
+                  disabled={isParsing || isReadOnly}
+                  title={
+                    isReadOnly
+                      ? "承認済み・却下済みの受注票は再解析できません"
+                      : "この画像を Gemini で解析する"
+                  }
+                >
+                  {isParsing ? (
+                    <><Loader2 className="h-3 w-3 mr-1 animate-spin" />解析中...</>
+                  ) : (
+                    <><Sparkles className="h-3 w-3 mr-1" />
+                      {verification.parsed_lines.length > 0 ? "再解析" : "Gemini 解析"}
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
             <div className="relative flex-1 min-h-[300px] bg-muted">
               <Image
                 src={verification.image_url}

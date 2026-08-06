@@ -51,6 +51,7 @@ import {
   createCustomer,
   updateCustomer,
   deleteCustomer,
+  reorderCustomers,
   type Customer,
 } from "../_actions/master-actions";
 
@@ -199,37 +200,52 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
     });
   }
 
+  /**
+   * 表示順を丸ごと保存する。
+   *
+   * 以前は入れ替えた2件だけを保存していたため、DB 側の sort_order が連番でない
+   * 状態（migrations の DEFAULT 999 で同値の顧客が複数いる）だと、リロード後に
+   * 並びが変わってしまっていた。出荷ラベル・出荷一覧表の順序はこの値で決まる。
+   */
+  function persistOrder(nextOrder: CustomerWithOrder[]) {
+    const previous = customers;
+    // 楽観更新（1..N を即座に反映）
+    setCustomers((prev) => {
+      const rank = new Map(nextOrder.map((c, i) => [c.id, i + 1]));
+      return prev.map((c) => ({ ...c, sort_order: rank.get(c.id) ?? c.sort_order }));
+    });
+
+    startTransition(async () => {
+      const result = await reorderCustomers(nextOrder.map((c) => c.id));
+      if (!result.success) {
+        toast.error("並び順の変更に失敗しました", { description: result.error });
+        setCustomers(previous);
+      }
+    });
+  }
+
   function handleMove(index: number, direction: "up" | "down") {
     const newIndex = direction === "up" ? index - 1 : index + 1;
     if (newIndex < 0 || newIndex >= sorted.length) return;
 
-    // Normalize all sort_orders to 1, 2, 3… then swap the two positions
-    const normalized = sorted.map((c, i) => ({ ...c, sort_order: i + 1 }));
-    const tmp = normalized[index].sort_order;
-    normalized[index] = { ...normalized[index], sort_order: normalized[newIndex].sort_order };
-    normalized[newIndex] = { ...normalized[newIndex], sort_order: tmp };
+    const next = [...sorted];
+    [next[index], next[newIndex]] = [next[newIndex], next[index]];
+    persistOrder(next);
+  }
 
-    const a = normalized[index];
-    const b = normalized[newIndex];
+  /**
+   * 順番を直接指定して移動する。
+   * 上下ボタンだけだと 30 番目を先頭に持ってくるのに 29 回の操作と往復が必要で、
+   * 店舗数が増えるほど実用に耐えなくなるため、1手で動かせる経路を用意する。
+   */
+  function handleMoveTo(index: number, targetPosition: number) {
+    const clamped = Math.min(Math.max(targetPosition, 1), sorted.length);
+    if (clamped - 1 === index) return;
 
-    // Optimistic local update
-    setCustomers((prev) =>
-      prev.map((c) => {
-        const n = normalized.find((x) => x.id === c.id);
-        return n ? { ...c, sort_order: n.sort_order } : c;
-      })
-    );
-
-    startTransition(async () => {
-      const [ra, rb] = await Promise.all([
-        updateCustomer(a.id, { sort_order: a.sort_order }),
-        updateCustomer(b.id, { sort_order: b.sort_order }),
-      ]);
-      if (!ra.success || !rb.success) {
-        toast.error("並び順の変更に失敗しました");
-        setCustomers(initial as CustomerWithOrder[]);
-      }
-    });
+    const next = [...sorted];
+    const [moved] = next.splice(index, 1);
+    next.splice(clamped - 1, 0, moved);
+    persistOrder(next);
   }
 
   return (
@@ -242,7 +258,7 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
               顧客を追加
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>顧客の追加</DialogTitle>
             </DialogHeader>
@@ -251,11 +267,13 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
         </Dialog>
       </div>
 
-      <div className="rounded-md border">
-        <Table>
+      {/* 狭い画面ではテーブルを横スクロールさせる（以前はブレークポイントが
+          1つも無く、スマホではページ全体が横に伸びていた） */}
+      <div className="rounded-md border overflow-x-auto">
+        <Table className="min-w-[760px]">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-28 text-center">配送順</TableHead>
+              <TableHead className="w-36 text-center">配送順</TableHead>
               <TableHead>顧客名</TableHead>
               <TableHead>系列</TableHead>
               <TableHead>店舗コード</TableHead>
@@ -281,22 +299,46 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
                         className="h-6 w-6"
                         disabled={index === 0 || isPending}
                         onClick={() => handleMove(index, "up")}
+                        aria-label={`${customer.name} を1つ上へ`}
                       >
                         <ChevronUp className="h-3.5 w-3.5" />
-                        <span className="sr-only">上へ</span>
                       </Button>
-                      <span className="text-sm text-muted-foreground w-5 text-center select-none">
-                        {index + 1}
-                      </span>
+                      {/* 順番を直接入力して1手で移動できる（上下ボタンだけだと
+                          遠い位置への移動が操作回数分の往復になる） */}
+                      <Input
+                        type="number"
+                        min={1}
+                        max={sorted.length}
+                        defaultValue={index + 1}
+                        key={`${customer.id}-${index}`}
+                        disabled={isPending}
+                        aria-label={`${customer.name} の配送順（1〜${sorted.length}）`}
+                        title="番号を入力して Enter で移動"
+                        className="h-6 w-11 px-1 text-center text-sm tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter") return;
+                          e.preventDefault();
+                          const value = Number((e.target as HTMLInputElement).value);
+                          if (Number.isFinite(value)) handleMoveTo(index, value);
+                        }}
+                        onBlur={(e) => {
+                          const value = Number(e.target.value);
+                          if (!Number.isFinite(value) || value === index + 1) {
+                            e.target.value = String(index + 1);
+                            return;
+                          }
+                          handleMoveTo(index, value);
+                        }}
+                      />
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6"
                         disabled={index === sorted.length - 1 || isPending}
                         onClick={() => handleMove(index, "down")}
+                        aria-label={`${customer.name} を1つ下へ`}
                       >
                         <ChevronDown className="h-3.5 w-3.5" />
-                        <span className="sr-only">下へ</span>
                       </Button>
                     </div>
                   </TableCell>
@@ -329,7 +371,7 @@ export function CustomersTab({ customers: initial }: { customers: Customer[] }) 
                             <span className="sr-only">編集</span>
                           </Button>
                         </DialogTrigger>
-                        <DialogContent>
+                        <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
                           <DialogHeader>
                             <DialogTitle>顧客の編集</DialogTitle>
                           </DialogHeader>
